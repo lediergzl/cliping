@@ -204,7 +204,15 @@ def process_segment(src, dst, payload_output, seg_effects, is_first, is_last):
 def combine(proc_files, segments, output_path):
     n = len(proc_files)
     if n == 1:
-        sh(["ffmpeg", "-y", "-i", str(proc_files[0]), "-c", "copy", str(output_path)])
+        # ✅ FIX: recodificamos también con 1 solo segmento para garantizar
+        # compatibilidad total del archivo final (evita problemas de timestamps
+        # o contenedores raros al hacer solo -c copy).
+        sh([
+            "ffmpeg", "-y", "-i", str(proc_files[0]),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p",
+            str(output_path),
+        ])
         return
 
     transitions = []
@@ -261,7 +269,11 @@ def main():
     if not has_effects(payload):
         # Sin efectos: unión directa sin recodificar (ruta rápida de v1).
         concat_list = clips_dir / "concat_list.txt"
-        concat_list.write_text("".join(f"file '{p}'\n" for p in raw_clips))
+        # ✅ FIX: ffmpeg resuelve rutas relativas respecto al propio listado,
+        # así que escribimos solo el nombre del archivo (no la ruta completa).
+        # Si escribiéramos 'clips/segment_000.mp4' con el listado dentro de
+        # clips/, ffmpeg buscaría 'clips/clips/segment_000.mp4' y fallaría.
+        concat_list.write_text("".join(f"file '{p.name}'\n" for p in raw_clips))
         sh(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(output_path)])
         return
 
