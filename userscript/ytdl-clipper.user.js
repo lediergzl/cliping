@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YTDL Clipper
 // @namespace    ytdl-clipper
-// @version      0.4.0
+// @version      0.5.0
 // @description  Marca trozos de un directo/VOD de YouTube o Twitch y los une en un clip
 // @match        https://www.youtube.com/*
 // @match        https://www.twitch.tv/*
@@ -56,13 +56,26 @@
 
     function log(...args) { console.log('[YTDL Clipper]', ...args); }
 
+    // YouTube exige Trusted Types: innerHTML directo queda bloqueado sin esto.
+    let ttPolicy = null;
+    if (window.trustedTypes && trustedTypes.createPolicy) {
+        try {
+            ttPolicy = trustedTypes.createPolicy('ytdl-clipper', { createHTML: (s) => s });
+        } catch (e) {
+            log('No se pudo crear la política Trusted Types:', e);
+        }
+    }
+    function setHTML(el, html) {
+        el.innerHTML = ttPolicy ? ttPolicy.createHTML(html) : html;
+    }
+
     // ================== UI ==================
     function injectPanel() {
         if (document.getElementById('ytdl-clipper-panel')) return;
 
         const panel = document.createElement('div');
         panel.id = 'ytdl-clipper-panel';
-        panel.innerHTML = `
+        setHTML(panel, `
             <div class="ytdl-header">
                 <span>🎬 YTDL Clipper</span>
                 <button class="ytdl-toggle" title="Ocultar">—</button>
@@ -128,7 +141,7 @@
                 </div>
                 <div class="ytdl-result" id="ytdl-result"></div>
             </div>
-        `;
+        `);
         document.body.appendChild(panel);
 
         const style = document.createElement('style');
@@ -258,9 +271,9 @@
         if (!container) return;
 
         if (state.segments.length === 0) {
-            container.innerHTML = '<div class="ytdl-empty">Sin trozos marcados</div>';
+            setHTML(container, '<div class="ytdl-empty">Sin trozos marcados</div>');
         } else {
-            container.innerHTML = state.segments.map((seg, i) => `
+            setHTML(container, state.segments.map((seg, i) => `
                 <div class="ytdl-segment" data-index="${i}">
                     <div style="display:flex; align-items:center; justify-content:space-between;">
                         <span class="ytdl-segment-time">
@@ -318,7 +331,7 @@
                     </div>
                     ` : ''}
                 </div>
-            `).join('');
+            `).join(''));
 
             container.querySelectorAll('.ytdl-segment-btn[data-action]').forEach(btn => {
                 btn.onclick = (e) => {
@@ -530,8 +543,8 @@
                         clearInterval(state.pollTimer);
                         state.pollTimer = null;
                         setStatus('✅ Clip listo');
-                        document.getElementById('ytdl-result').innerHTML =
-                            '<a href="' + data.downloadUrl + '" target="_blank" rel="noopener">⬇️ Descargar clip</a>';
+                        setHTML(document.getElementById('ytdl-result'),
+                            '<a href="' + data.downloadUrl + '" target="_blank" rel="noopener">⬇️ Descargar clip</a>');
                         state.jobId = null;
                         updateMergeButton();
                     } else if (data.status === 'error') {
@@ -560,7 +573,7 @@
                 state.jobId = null;
                 if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
                 const result = document.getElementById('ytdl-result');
-                if (result) result.innerHTML = '';
+                if (result) setHTML(result, '');
                 const btnStart = document.getElementById('ytdl-mark-start');
                 const btnEnd = document.getElementById('ytdl-mark-end');
                 if (btnStart) btnStart.disabled = false;
