@@ -122,11 +122,8 @@ def build_segment_filter(aspect, canvas, zoom, watermark, title, fade_in, fade_o
     w, h = canvas if canvas else (src_w, src_h)
     steps = []
 
-    if canvas and aspect == "16:9":
-        steps.append(f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                      f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black[vaspect]")
-        vlabel = "[vaspect]"
-    elif canvas:  # 9:16 o 1:1: fondo difuminado + primer plano centrado
+    if canvas and aspect in ("9:16", "1:1"):
+        # Fondo difuminado + primer plano centrado
         steps.append(
             f"[0:v]split=2[bgsrc][fgsrc];"
             f"[bgsrc]scale={w}:{h}:force_original_aspect_ratio=increase,"
@@ -135,7 +132,15 @@ def build_segment_filter(aspect, canvas, zoom, watermark, title, fade_in, fade_o
             f"[bgblur][fgscaled]overlay=(W-w)/2:(H-h)/2[vaspect]"
         )
         vlabel = "[vaspect]"
+    elif canvas:
+        # 16:9  ó  "original" con canvas común → letterbox/pillarbox
+        steps.append(
+            f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black[vaspect]"
+        )
+        vlabel = "[vaspect]"
     else:
+        # Sin canvas: mantener resolución original (solo se usa si nunca se concatena)
         steps.append("[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2[vaspect]")
         vlabel = "[vaspect]"
 
@@ -216,9 +221,9 @@ def build_audio_filter(normalize, is_first, is_last, fade_in, fade_out, seg_dur,
     return ";".join(steps)
 
 
-def process_segment(src, dst, payload_output, seg_effects, is_first, is_last):
+def process_segment(src, dst, payload_output, seg_effects, is_first, is_last, common_canvas=None):
     aspect = payload_output.get("aspect_ratio") or "original"
-    canvas = CANVAS.get(aspect)
+    canvas = common_canvas if common_canvas is not None else CANVAS.get(aspect)
     src_w = int(probe(src, "width"))
     src_h = int(probe(src, "height"))
     seg_dur = duration_of(src)
@@ -396,11 +401,37 @@ def main():
     else:
         # Con efectos, o si yt-dlp entregó VP9/AV1/Opus (no reproducible en muchos
         # sitios): se recodifica a H.264/AAC.
+        aspect = output_cfg.get("aspect_ratio") or "original"
+        common_canvas = CANVAS.get(aspect)
+
+        if common_canvas is None:
+            # "original": detectar si los segmentos tienen resoluciones distintas.
+            sizes = set()
+            for p in raw_clips:
+                w = int(probe(p, "width"))
+                h = int(probe(p, "height"))
+                sizes.add((w, h))
+            if len(sizes) > 1:
+                max_w = max(w for w, _ in sizes)
+                max_h = max(h for _, h in sizes)
+                # redondear a par (yuv420p)
+                max_w += max_w % 2
+                max_h += max_h % 2
+                common_canvas = (max_w, max_h)
+                print(f"Resoluciones mixtas detectadas {sizes}; canvas común → {common_canvas}",
+                      flush=True)
+            else:
+                common_canvas = None  # todas iguales, no hace falta forzar nada
+
         proc_files = []
         for i, src in enumerate(raw_clips):
             seg_effects = segments_cfg[i] if i < len(segments_cfg) else {}
             dst = clips_dir / f"proc_{i:03d}.mp4"
-            process_segment(src, dst, output_cfg, seg_effects, i == 0, i == len(raw_clips) - 1)
+            process_segment(
+                src, dst, output_cfg, seg_effects,
+                i == 0, i == len(raw_clips) - 1,
+                common_canvas,
+            )
             proc_files.append(dst)
         combine(proc_files, segments_cfg, built)
 
