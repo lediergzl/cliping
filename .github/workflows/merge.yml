@@ -1,4 +1,3 @@
-
 name: Merge Clips
 
 on:
@@ -28,11 +27,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Instalar yt-dlp y ffmpeg
+      # ✅ NUEVO: Instalar Deno (runtime JS para yt-dlp)
+      - name: Instalar Deno
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v2.x
+
+      - name: Instalar yt-dlp, EJS y ffmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           pip install -U yt-dlp
+          pip install -U yt-dlp-ejs
 
       - name: Guardar cookies
         run: |
@@ -56,6 +62,8 @@ jobs:
             echo "Segmento $IDX: $START -> $END"
             yt-dlp \
               --cookies cookies.txt \
+              --remote-components ejs:github \
+              --js-runtimes deno \
               --download-sections "*${START}-${END}" \
               --force-keyframes-at-cuts \
               -f "bv*+ba/b" \
