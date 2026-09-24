@@ -1,0 +1,9 @@
+{
+  "name": "clip-publisher-action",
+  "private": true,
+  "type": "module",
+  "description": "Corre dentro del Action de GitHub: descarga el clip, publica con Playwright usando la sesión guardada de la cuenta, y reporta el resultado al Worker.",
+  "dependencies": {
+    "playwright": "^1.47.0"
+  }
+}
