@@ -33,19 +33,17 @@ jobs:
         with:
           deno-version: v2.x
 
-      # ✅ NUEVO: Instalar Node.js (necesario para el generador de tokens)
+      # ✅ Instalar Node.js (necesario para el generador de tokens)
       - name: Instalar Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      # ✅ NUEVO: Clonar y transpilar el generador de tokens PO
+      # ✅ Clonar y transpilar el generador de tokens PO
       - name: Configurar generador de PO Tokens
         run: |
-          # Clonamos el repositorio en el directorio home del runner
           git clone --single-branch --branch 2.0.0 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git ~/bgutil-ytdlp-pot-provider
           cd ~/bgutil-ytdlp-pot-provider/server/
-          # Instalamos dependencias y transpilamos el script a JavaScript
           npm ci
           npx tsc
 
@@ -54,7 +52,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           pip install -U yt-dlp yt-dlp-ejs
-          # ✅ Instalamos el plugin que se comunica con el script generador
           pip install -U bgutil-ytdlp-pot-provider
 
       - name: Descargar y recortar segmentos
@@ -70,7 +67,7 @@ jobs:
             IDX=$(printf "%03d" "$i")
             echo "Segmento $IDX: $START -> $END"
             yt-dlp \
-              --extractor-args "youtube:player_client=mweb,getpot_bgutil_script=/home/runner/bgutil-ytdlp-pot-provider/server/build/generate_once.js" \
+              --extractor-args "youtubepot-bgutilscript:server_home=/home/runner/bgutil-ytdlp-pot-provider/server" \
               --remote-components ejs:github \
               --js-runtimes deno \
               --download-sections "*${START}-${END}" \
