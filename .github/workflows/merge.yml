@@ -73,35 +73,70 @@ jobs:
         env:
           PAYLOAD: ${{ inputs.payload }}
           YTDL_COOKIES: ${{ secrets.YTDL_COOKIES }}
+          # Opcional: proxy (http://user:pass@host:puerto)
+          PROXY_URL: ${{ secrets.PROXY_URL }}
         run: |
           mkdir -p clips
           printf '%s' "$PAYLOAD" > payload.json
-
-          if [ -z "$YTDL_COOKIES" ]; then
-            echo "::error::El secret YTDL_COOKIES está vacío o no existe (Settings > Secrets and variables > Actions)"
-            exit 1
-          fi
-          printf '%s\n' "$YTDL_COOKIES" > cookies.txt
-          echo "Cookies cargadas: $(grep -vc '^#' cookies.txt) líneas"
           URL=$(jq -r '.url' payload.json)
           COUNT=$(jq '.segments | length' payload.json)
           echo "URL: $URL — $COUNT segmento(s)"
+
+          # Cookies de sesión (necesarias en YouTube desde IPs de datacenter)
+          COOKIE_ARGS=()
+          if [ -n "$YTDL_COOKIES" ]; then
+            printf '%s\n' "$YTDL_COOKIES" > cookies.txt
+            COOKIE_ARGS=(--cookies cookies.txt)
+            echo "Cookies cargadas: $(grep -vc '^#' cookies.txt) líneas"
+          else
+            echo "::warning::YTDL_COOKIES vacío: YouTube probablemente pedirá iniciar sesión"
+          fi
+
+          PROXY_ARGS=()
+          if [ -n "$PROXY_URL" ]; then
+            PROXY_ARGS=(--proxy "$PROXY_URL")
+            echo "Usando proxy configurado en PROXY_URL"
+          fi
+
+          # Clientes de YouTube a probar, en orden ("" = el predeterminado de yt-dlp)
+          CLIENTS=("" "youtube:player_client=tv,mweb" "youtube:player_client=web_safari")
+
+          download_segment() {
+            local start="$1" end="$2" out="$3" cl
+            for cl in "${CLIENTS[@]}"; do
+              local extra=()
+              [ -n "$cl" ] && extra=(--extractor-args "$cl")
+              echo "→ intento con cliente: ${cl:-predeterminado}"
+              if yt-dlp \
+                  "${COOKIE_ARGS[@]}" \
+                  "${PROXY_ARGS[@]}" \
+                  "${extra[@]}" \
+                  --extractor-args "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" \
+                  --remote-components ejs:github \
+                  --js-runtimes deno \
+                  --retries 3 \
+                  --download-sections "*${start}-${end}" \
+                  --force-keyframes-at-cuts \
+                  -f "bv*+ba/b" \
+                  --merge-output-format mp4 \
+                  -o "$out" \
+                  "$URL"; then
+                return 0
+              fi
+              sleep 3
+            done
+            return 1
+          }
+
           for i in $(seq 0 $((COUNT - 1))); do
             START=$(jq -r ".segments[$i].start" payload.json)
             END=$(jq -r ".segments[$i].end" payload.json)
             IDX=$(printf "%03d" "$i")
             echo "Segmento $IDX: $START -> $END"
-            yt-dlp \
-              --cookies cookies.txt \
-              --extractor-args "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" \
-              --remote-components ejs:github \
-              --js-runtimes deno \
-              --download-sections "*${START}-${END}" \
-              --force-keyframes-at-cuts \
-              -f "bv*+ba/b" \
-              --merge-output-format mp4 \
-              -o "clips/segment_${IDX}.mp4" \
-              "$URL"
+            if ! download_segment "$START" "$END" "clips/segment_${IDX}.mp4"; then
+              echo "::error::YouTube bloqueó la descarga con todos los clientes. Renueva las cookies (YTDL_COOKIES, exportadas desde una ventana de incógnito) o usa PROXY_URL / un self-hosted runner."
+              exit 1
+            fi
           done
 
       - name: Unir segmentos (con o sin efectos v2)
