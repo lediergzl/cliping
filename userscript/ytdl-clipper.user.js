@@ -30,6 +30,22 @@
         editingIndex: null, // índice del trozo abierto para ajuste fino, o null
     };
 
+    // ================== ANCHO DEL PANEL ==================
+    const PANEL_WIDTH_KEY = 'ytdl-clipper-panel-width';
+    const PANEL_WIDTH_MIN = 280;
+    const PANEL_WIDTH_MAX = 900;
+    const PANEL_WIDTH_DEFAULT = 320;
+
+    function getSavedPanelWidth() {
+        const raw = parseInt(localStorage.getItem(PANEL_WIDTH_KEY), 10);
+        if (Number.isNaN(raw)) return PANEL_WIDTH_DEFAULT;
+        return Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, raw));
+    }
+
+    function savePanelWidth(px) {
+        try { localStorage.setItem(PANEL_WIDTH_KEY, String(px)); } catch (e) { /* ignorar */ }
+    }
+
     // ================== UTILIDADES ==================
     function getVideo() {
         const videos = Array.from(document.querySelectorAll('video'));
@@ -70,12 +86,56 @@
     }
 
     // ================== UI ==================
+    function setupPanelResize(panel) {
+        const handle = document.getElementById('ytdl-resize-handle');
+        if (!handle) return;
+        let dragging = false;
+        let startX = 0;
+        let startWidth = 0;
+
+        handle.addEventListener('mousedown', (e) => {
+            dragging = true;
+            startX = e.clientX;
+            startWidth = panel.getBoundingClientRect().width;
+            panel.classList.add('ytdl-resizing');
+            e.preventDefault();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            // El panel está anclado a la derecha (right: 20px), así que
+            // arrastrar hacia la izquierda (deltaX negativo) debe ensancharlo.
+            const deltaX = e.clientX - startX;
+            const newWidth = Math.min(
+                Math.min(PANEL_WIDTH_MAX, window.innerWidth - 40),
+                Math.max(PANEL_WIDTH_MIN, startWidth - deltaX)
+            );
+            panel.style.width = newWidth + 'px';
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (!dragging) return;
+            dragging = false;
+            panel.classList.remove('ytdl-resizing');
+            savePanelWidth(Math.round(panel.getBoundingClientRect().width));
+        });
+
+        // Doble clic en el tirador: alterna entre ancho normal y ancho amplio
+        handle.addEventListener('dblclick', () => {
+            const current = panel.getBoundingClientRect().width;
+            const target = current > PANEL_WIDTH_DEFAULT + 40 ? PANEL_WIDTH_DEFAULT : 560;
+            panel.style.width = Math.min(target, window.innerWidth - 40) + 'px';
+            savePanelWidth(Math.round(panel.getBoundingClientRect().width));
+        });
+    }
+
     function injectPanel() {
         if (document.getElementById('ytdl-clipper-panel')) return;
 
         const panel = document.createElement('div');
         panel.id = 'ytdl-clipper-panel';
         setHTML(panel, `
+            <div class="ytdl-resize-handle" id="ytdl-resize-handle" title="Arrastra para ensanchar"></div>
             <div class="ytdl-header">
                 <span>🎬 YTDL Clipper</span>
                 <button class="ytdl-toggle" title="Ocultar">—</button>
@@ -173,14 +233,25 @@
         style.textContent = `
             #ytdl-clipper-panel {
                 position: fixed; top: 80px; right: 20px;
-                width: 320px; z-index: 99999;
+                width: ${getSavedPanelWidth()}px; z-index: 99999;
                 background: #18181b; color: #efeff1;
                 border: 1px solid #2f2f35; border-radius: 8px;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                 font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
                 user-select: none;
+                max-width: 95vw;
             }
             #ytdl-clipper-panel.ytdl-collapsed .ytdl-body { display: none; }
+            #ytdl-clipper-panel.ytdl-resizing { user-select: none; }
+            .ytdl-resize-handle {
+                position: absolute; top: 0; left: -4px; bottom: 0; width: 8px;
+                cursor: ew-resize; z-index: 2;
+            }
+            .ytdl-resize-handle:hover, #ytdl-clipper-panel.ytdl-resizing .ytdl-resize-handle {
+                background: rgba(145, 71, 255, 0.5);
+            }
+            #ytdl-clipper-panel.ytdl-resizing { transition: none; }
+            #ytdl-clipper-panel iframe { pointer-events: none; }
             .ytdl-header {
                 display: flex; justify-content: space-between; align-items: center;
                 padding: 8px 12px; background: #0e0e10;
@@ -290,6 +361,7 @@
         document.querySelector('#ytdl-clipper-panel .ytdl-toggle').onclick = () => {
             panel.classList.toggle('ytdl-collapsed');
         };
+        setupPanelResize(panel);
         document.getElementById('ytdl-mark-start').onclick = onMarkStart;
         document.getElementById('ytdl-mark-end').onclick = onMarkEnd;
         document.getElementById('ytdl-merge').onclick = onMerge;
