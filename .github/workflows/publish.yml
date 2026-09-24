@@ -1,0 +1,61 @@
+name: Publish Clip
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'ID del job (prefijo pub-)'
+        required: true
+        type: string
+      payload:
+        description: 'JSON: { platform, account, clip_url, caption, hashtags }'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serializa publicaciones de UNA MISMA cuenta (no dos posts a la vez desde
+  # la misma sesión), pero deja correr en paralelo cuentas distintas.
+  group: publish-${{ fromJson(inputs.payload).account }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar dependencias
+        working-directory: scripts/publish
+        run: npm install
+
+      - name: Instalar Chromium (Playwright)
+        working-directory: scripts/publish
+        run: npx playwright install --with-deps chromium
+
+      - name: Publicar
+        working-directory: scripts/publish
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          PAYLOAD: ${{ inputs.payload }}
+          WORKER_URL: ${{ secrets.PUBLISH_WORKER_URL }}
+          CLIENT_TOKEN: ${{ secrets.CLIENT_TOKEN }}
+        run: node run.js
+
+      - name: Subir evidencia de fallo
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-evidence-${{ inputs.job_id }}
+          path: scripts/publish/failure-evidence/
+          retention-days: 14
+          if-no-files-found: ignore
