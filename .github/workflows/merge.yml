@@ -27,26 +27,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ NUEVO: Instalar Deno (runtime JS para yt-dlp)
+      # ✅ Instalar Deno (runtime JS para yt-dlp)
       - name: Instalar Deno
         uses: denoland/setup-deno@v1
         with:
           deno-version: v2.x
 
-      - name: Instalar yt-dlp, EJS y ffmpeg
+      # ✅ NUEVO: Instalar Node.js (necesario para el generador de tokens)
+      - name: Instalar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ✅ NUEVO: Clonar y transpilar el generador de tokens PO
+      - name: Configurar generador de PO Tokens
+        run: |
+          # Clonamos el repositorio en el directorio home del runner
+          git clone --single-branch --branch 2.0.0 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git ~/bgutil-ytdlp-pot-provider
+          cd ~/bgutil-ytdlp-pot-provider/server/
+          # Instalamos dependencias y transpilamos el script a JavaScript
+          npm ci
+          npx tsc
+
+      - name: Instalar yt-dlp, EJS, ffmpeg y plugin POT
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          pip install -U yt-dlp
-          pip install -U yt-dlp-ejs
-
-      - name: Guardar cookies
-        run: |
-          printf '%s' "${{ secrets.YTDL_COOKIES }}" > cookies.txt
-          if [ ! -s cookies.txt ]; then
-            echo "::error::YTDL_COOKIES está vacío. Configúralo en Settings > Secrets."
-            exit 1
-          fi
+          pip install -U yt-dlp yt-dlp-ejs
+          # ✅ Instalamos el plugin que se comunica con el script generador
+          pip install -U bgutil-ytdlp-pot-provider
 
       - name: Descargar y recortar segmentos
         run: |
@@ -61,7 +70,7 @@ jobs:
             IDX=$(printf "%03d" "$i")
             echo "Segmento $IDX: $START -> $END"
             yt-dlp \
-              --cookies cookies.txt \
+              --extractor-args "youtube:player_client=mweb,getpot_bgutil_script=/home/runner/bgutil-ytdlp-pot-provider/server/build/generate_once.js" \
               --remote-components ejs:github \
               --js-runtimes deno \
               --download-sections "*${START}-${END}" \
@@ -84,6 +93,6 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Limpiar cookies
+      - name: Limpiar archivos temporales
         if: always()
-        run: rm -f cookies.txt payload.json
+        run: rm -f payload.json
