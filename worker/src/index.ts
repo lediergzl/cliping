@@ -4,7 +4,10 @@ export interface Env {
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
   GITHUB_WORKFLOW_FILE: string;
+  GITHUB_PUBLISH_WORKFLOW_FILE: string;
   GITHUB_REF: string;
+  PUBLISH_KV: KVNamespace;
+  SESSION_ENC_KEY: string; // cifra las cookies de sesión guardadas en KV
 }
 
 const GH_API = "https://api.github.com";
@@ -255,6 +258,149 @@ async function streamClip(request: Request, env: Env, url: URL, jobId: string): 
   return new Response(upstream.body, { status: upstream.status, headers });
 }
 
+// ---------- Sesiones de navegador (storageState de Playwright), cifradas ----------
+// Se guardan en KV como { account: string } -> AES-GCM(storageState JSON).
+// Cifrado con SESSION_ENC_KEY para que ni el dashboard de Cloudflare las
+// muestre en claro; solo quien tiene CLIENT_TOKEN + SESSION_ENC_KEY puede
+// leerlas de vuelta (el propio Worker, al servirlas al Action).
+
+const ACCOUNT_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+
+async function encKey(env: Env): Promise<CryptoKey> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.SESSION_ENC_KEY));
+  return crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+async function encryptJSON(env: Env, data: unknown): Promise<string> {
+  const key = await encKey(env);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = new TextEncoder().encode(JSON.stringify(data));
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
+  const combined = new Uint8Array(iv.length + cipher.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(cipher), iv.length);
+  return btoa(String.fromCharCode(...combined));
+}
+
+async function decryptJSON(env: Env, b64: string): Promise<unknown> {
+  const raw = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const iv = raw.slice(0, 12);
+  const cipher = raw.slice(12);
+  const key = await encKey(env);
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, cipher);
+  return JSON.parse(new TextDecoder().decode(plaintext));
+}
+
+async function saveSession(request: Request, env: Env, account: string): Promise<Response> {
+  if (!ACCOUNT_RE.test(account)) return json({ ok: false, error: "Nombre de cuenta inválido" }, 400);
+  let body: any;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "JSON inválido" }, 400);
+  }
+  if (!body?.state) return json({ ok: false, error: "Falta 'state'" }, 400);
+
+  const enc = await encryptJSON(env, body.state);
+  await env.PUBLISH_KV.put(`session:${account}`, enc);
+  return json({ ok: true });
+}
+
+async function loadSession(env: Env, account: string): Promise<Response> {
+  if (!ACCOUNT_RE.test(account)) return json({ ok: false, error: "Nombre de cuenta inválido" }, 400);
+  const enc = await env.PUBLISH_KV.get(`session:${account}`);
+  if (!enc) return json({ ok: false, error: "No hay sesión guardada para esta cuenta" }, 404);
+  const state = await decryptJSON(env, enc);
+  return json({ ok: true, state });
+}
+
+// ---------- Publicación ----------
+const PLATFORMS = new Set(["tiktok", "instagram", "facebook", "youtube"]);
+
+function validatePublishPayload(body: any): { ok: true; data: any } | { ok: false; error: string } {
+  if (!body?.platform || !PLATFORMS.has(body.platform)) return { ok: false, error: "'platform' inválida" };
+  if (!body?.account || !ACCOUNT_RE.test(body.account)) return { ok: false, error: "'account' inválida" };
+  if (!body?.clip_url || typeof body.clip_url !== "string") return { ok: false, error: "Falta 'clip_url'" };
+  return {
+    ok: true,
+    data: {
+      platform: body.platform,
+      account: body.account,
+      clip_url: body.clip_url,
+      caption: typeof body.caption === "string" ? body.caption.slice(0, 2000) : "",
+      hashtags: Array.isArray(body.hashtags) ? body.hashtags.slice(0, 30).map(String) : [],
+    },
+  };
+}
+
+async function dispatchPublishWorkflow(env: Env, jobId: string, payload: unknown) {
+  const url = `${GH_API}/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/${env.GITHUB_PUBLISH_WORKFLOW_FILE}/dispatches`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { ...ghHeaders(env), "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ref: env.GITHUB_REF,
+      inputs: { job_id: jobId, payload: JSON.stringify(payload) },
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GitHub dispatch falló: ${res.status} ${text}`);
+  }
+}
+
+async function findPublishRun(env: Env, jobId: string) {
+  const since = jobTimestamp(jobId) - 15000;
+  const url = `${GH_API}/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/${env.GITHUB_PUBLISH_WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=10`;
+  const res = await fetch(url, { headers: ghHeaders(env) });
+  if (!res.ok) return null;
+  const data: any = await res.json();
+  const candidates = (data.workflow_runs || [])
+    .filter((r: any) => new Date(r.created_at).getTime() >= since)
+    .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  return candidates[0] || null;
+}
+
+// El Action llama aquí al terminar (éxito o error) — así no dependemos de
+// artifacts/releases para saber el resultado de una publicación.
+async function savePublishResult(request: Request, env: Env): Promise<Response> {
+  let body: any;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "JSON inválido" }, 400);
+  }
+  if (!body?.job_id || !/^pub-/.test(body.job_id)) return json({ ok: false, error: "job_id inválido" }, 400);
+
+  await env.PUBLISH_KV.put(
+    `result:${body.job_id}`,
+    JSON.stringify({
+      status: body.status === "done" ? "done" : "error",
+      url: body.url || null,
+      error: body.error || null,
+      finishedAt: new Date().toISOString(),
+    }),
+    { expirationTtl: 30 * 24 * 3600 } // 30 días, para no acumular basura en KV
+  );
+  return json({ ok: true });
+}
+
+async function publishStatus(env: Env, jobId: string): Promise<Response> {
+  const stored = await env.PUBLISH_KV.get(`result:${jobId}`);
+  if (stored) return json({ status: "resolved", ...JSON.parse(stored) });
+
+  const run = await findPublishRun(env, jobId);
+  if (!run) return json({ status: "queued", progress: 0 });
+  if (run.status !== "completed") {
+    return json({ status: run.status, progress: run.status === "in_progress" ? 50 : 10 });
+  }
+  if (run.conclusion !== "success") {
+    return json({ status: "error", error: `Workflow terminó con: ${run.conclusion}` });
+  }
+  // Terminó bien pero aún no llegó el callback con el resultado — raro pero posible.
+  return json({ status: "in_progress", progress: 95 });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -307,6 +453,10 @@ export default {
       const jobId = url.pathname.split("/status/")[1];
       if (!jobId) return json({ status: "error", error: "jobId faltante" }, 400);
 
+      if (jobId.startsWith("pub-")) {
+        return publishStatus(env, jobId);
+      }
+
       const run = await findRun(env, jobId);
       if (!run) {
         return json({ status: "queued", progress: 0 });
@@ -329,6 +479,40 @@ export default {
       // downloadUrl: descarga directa desde GitHub.
       const previewUrl = await signedLink(env, url.origin, jobId);
       return json({ status: "completed", downloadUrl: asset.url, previewUrl });
+    }
+
+    // --- Sesiones de navegador por cuenta (usadas por el flujo de publicación) ---
+    if (url.pathname.startsWith("/session/")) {
+      const account = url.pathname.slice("/session/".length);
+      if (request.method === "PUT") return saveSession(request, env, account);
+      if (request.method === "GET") return loadSession(env, account);
+      return json({ ok: false, error: "Método no soportado" }, 405);
+    }
+
+    // --- Publicar un clip ya generado en una red social ---
+    if (request.method === "POST" && url.pathname === "/publish") {
+      let body: any;
+      try {
+        body = await request.json();
+      } catch {
+        return json({ ok: false, error: "JSON inválido" }, 400);
+      }
+
+      const validation = validatePublishPayload(body);
+      if (!validation.ok) return json({ ok: false, error: validation.error }, 400);
+
+      const jobId = `pub-${makeJobId()}`;
+      try {
+        await dispatchPublishWorkflow(env, jobId, validation.data);
+      } catch (e: any) {
+        return json({ ok: false, error: e.message }, 502);
+      }
+      return json({ ok: true, jobId });
+    }
+
+    // --- El Action reporta aquí el resultado final de una publicación ---
+    if (request.method === "POST" && url.pathname === "/publish-result") {
+      return savePublishResult(request, env);
     }
 
     return json({ ok: false, error: "Not found" }, 404);

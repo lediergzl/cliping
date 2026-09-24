@@ -6,8 +6,22 @@ compatibility_date = "2024-09-23"
 GITHUB_OWNER = "lediergzl"
 GITHUB_REPO = "cliping"
 GITHUB_WORKFLOW_FILE = "merge.yml"
+GITHUB_PUBLISH_WORKFLOW_FILE = "publish.yml"
 GITHUB_REF = "main"
 
+# KV donde se guardan, cifradas, las sesiones de navegador (una por cuenta)
+# y los resultados de los jobs de publicación. Crear con:
+#   wrangler kv namespace create PUBLISH_KV
+# y pegar aquí el id que devuelve.
+[[kv_namespaces]]
+binding = "PUBLISH_KV"
+id = "PON-AQUI-EL-ID-QUE-DEVUELVE-wrangler-kv-namespace-create"
+
 # Secrets (NO van aquí, se definen con `wrangler secret put <NOMBRE>`):
-#   GITHUB_TOKEN  -> PAT con permisos Actions:write y Contents:read sobre el repo
-#   CLIENT_TOKEN  -> cadena aleatoria propia, la misma que pones en el userscript
+#   GITHUB_TOKEN     -> PAT con permisos Actions:write y Contents:read sobre el repo
+#   CLIENT_TOKEN     -> cadena aleatoria propia, la misma que pones en el userscript
+#   SESSION_ENC_KEY  -> otra cadena aleatoria propia (32+ chars), SOLO para esto.
+#                       Cifra las cookies de sesión antes de guardarlas en KV,
+#                       para que ni tú mirando el dashboard de Cloudflare las veas en claro.
+#                       Generar con: openssl rand -hex 32
+
