@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YTDL Clipper
 // @namespace    ytdl-clipper
-// @version      0.5.0
+// @version      0.6.0
 // @description  Marca trozos de un directo/VOD de YouTube o Twitch y los une en un clip
 // @match        https://www.youtube.com/*
 // @match        https://www.twitch.tv/*
@@ -133,6 +133,31 @@
                                 <option value="bottom" selected>Abajo</option>
                             </select>
                         </div>
+                        <div class="ytdl-eff-sep">🎵 Música de fondo</div>
+                        <div class="ytdl-eff-row">
+                            <input type="text" id="eff-audio-src" placeholder="URL (YouTube, mp3...) o archivo de audio/">
+                        </div>
+                        <div class="ytdl-eff-row">
+                            <select id="eff-audio-mode">
+                                <option value="mix" selected>Mezclar con el original</option>
+                                <option value="replace">Reemplazar el original</option>
+                            </select>
+                        </div>
+                        <div class="ytdl-eff-row">
+                            <label>Música</label>
+                            <input type="range" id="eff-audio-vol" min="0" max="100" value="50">
+                            <span id="eff-audio-vol-v" class="ytdl-eff-val">50%</span>
+                        </div>
+                        <div class="ytdl-eff-row">
+                            <label>Original</label>
+                            <input type="range" id="eff-audio-orig" min="0" max="100" value="100">
+                            <span id="eff-audio-orig-v" class="ytdl-eff-val">100%</span>
+                        </div>
+                        <div class="ytdl-eff-row">
+                            <label>Empezar en</label>
+                            <input type="number" id="eff-audio-start" min="0" step="1" value="0" style="width:52px">s
+                            <label><input type="checkbox" id="eff-audio-loop" checked> Repetir</label>
+                        </div>
                     </div>
                 </details>
                 <div class="ytdl-segments" id="ytdl-segments"></div>
@@ -245,9 +270,20 @@
                 padding: 3px 6px; margin-left: auto;
             }
             .ytdl-edit-seek:hover { opacity: 0.85; }
+            .ytdl-eff-sep { margin-top: 8px; padding-top: 6px; border-top: 1px solid #2f2f35; font-weight: 600; color: #adadb8; }
+            .ytdl-eff-row input[type="range"] { flex: 1; min-width: 0; }
+            .ytdl-eff-val { width: 34px; text-align: right; font-family: monospace; }
             .ytdl-result { margin-top: 8px; font-size: 12px; }
             .ytdl-result a { color: #9147ff; text-decoration: none; font-weight: 600; }
             .ytdl-result a:hover { text-decoration: underline; }
+            .ytdl-video { width: 100%; max-height: 220px; background: #000; border-radius: 4px; margin-bottom: 6px; }
+            .ytdl-result-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+            .ytdl-mini-btn {
+                background: #2f2f35; border: none; color: #efeff1; border-radius: 3px;
+                cursor: pointer; font-size: 11px; padding: 4px 8px;
+            }
+            .ytdl-mini-btn:hover { background: #3f3f46; }
+            .ytdl-hint { margin-top: 6px; color: #adadb8; font-size: 11px; }
         `;
         document.head.appendChild(style);
 
@@ -257,6 +293,10 @@
         document.getElementById('ytdl-mark-start').onclick = onMarkStart;
         document.getElementById('ytdl-mark-end').onclick = onMarkEnd;
         document.getElementById('ytdl-merge').onclick = onMerge;
+        [['eff-audio-vol', 'eff-audio-vol-v'], ['eff-audio-orig', 'eff-audio-orig-v']].forEach(([inp, out]) => {
+            const el = document.getElementById(inp);
+            el.addEventListener('input', () => { document.getElementById(out).textContent = el.value + '%'; });
+        });
 
         renderSegments();
     }
@@ -458,6 +498,20 @@
         const val = (id) => document.getElementById(id);
         const titleText = val('eff-title-text').value.trim();
         const watermarkText = val('eff-watermark-text').value.trim();
+        const audioSrc = val('eff-audio-src').value.trim();
+        let audio = null;
+        if (audioSrc) {
+            audio = {
+                mode: val('eff-audio-mode').value,
+                volume: (parseInt(val('eff-audio-vol').value, 10) || 0) / 100,
+                original_volume: (parseInt(val('eff-audio-orig').value, 10) || 0) / 100,
+                start: parseFloat(val('eff-audio-start').value) || 0,
+                loop: val('eff-audio-loop').checked,
+                fade_out: 2,
+            };
+            // URL descargable o nombre de un archivo de la carpeta audio/ del repo
+            if (/^https?:\/\//i.test(audioSrc)) audio.url = audioSrc; else audio.file = audioSrc;
+        }
         return {
             aspect_ratio: val('eff-aspect').value,
             fade_in: val('eff-fadein').checked ? (parseFloat(val('eff-fadein-s').value) || 0) : 0,
@@ -465,6 +519,7 @@
             normalize_audio: val('eff-normalize').checked,
             title: titleText ? { text: titleText, position: val('eff-title-pos').value, duration: val('eff-title-dur').value } : null,
             watermark: watermarkText ? { text: watermarkText, position: val('eff-watermark-pos').value } : null,
+            audio,
         };
     }
 
@@ -524,6 +579,47 @@
         });
     }
 
+    // ================== RESULTADO: VER ONLINE / COMPARTIR ==================
+    function escAttr(str) {
+        return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function showResult(data) {
+        // previewUrl: enlace del Worker que reproduce el clip sin descargarlo (y sirve
+        // para compartirlo; caduca a los 7 días). downloadUrl: descarga directa.
+        const preview = data.previewUrl || data.downloadUrl;
+        const box = document.getElementById('ytdl-result');
+        setHTML(box, `
+            <video class="ytdl-video" id="ytdl-video" controls playsinline preload="metadata" src="${escAttr(preview)}"></video>
+            <div class="ytdl-result-actions">
+                <a href="${escAttr(preview)}" target="_blank" rel="noopener">▶ Ver online</a>
+                <button class="ytdl-mini-btn" id="ytdl-copy">🔗 Copiar enlace</button>
+                <button class="ytdl-mini-btn" id="ytdl-share" style="display:none">📤 Compartir</button>
+                <a href="${escAttr(data.downloadUrl)}" target="_blank" rel="noopener">⬇️ Descargar</a>
+            </div>
+            <div class="ytdl-hint" id="ytdl-hint">El enlace para ver y compartir dura 7 días.</div>
+        `);
+        const hint = document.getElementById('ytdl-hint');
+        document.getElementById('ytdl-video').addEventListener('error', () => {
+            hint.textContent = 'Esta página bloquea el reproductor incrustado: usa "Ver online" (se abre en una pestaña nueva).';
+        });
+        document.getElementById('ytdl-copy').addEventListener('click', () => {
+            const done = () => { hint.textContent = '✅ Enlace copiado (válido 7 días).'; };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(preview).then(done, () => window.prompt('Copia el enlace:', preview));
+            } else {
+                window.prompt('Copia el enlace:', preview);
+            }
+        });
+        if (navigator.share) {
+            const shareBtn = document.getElementById('ytdl-share');
+            shareBtn.style.display = '';
+            shareBtn.addEventListener('click', () => {
+                navigator.share({ title: 'Mi clip', url: preview }).catch(() => { /* cancelado */ });
+            });
+        }
+    }
+
     function startPolling() {
         if (state.pollTimer) clearInterval(state.pollTimer);
         state.pollTimer = setInterval(checkStatus, CONFIG.POLL_INTERVAL_MS);
@@ -543,8 +639,7 @@
                         clearInterval(state.pollTimer);
                         state.pollTimer = null;
                         setStatus('✅ Clip listo');
-                        setHTML(document.getElementById('ytdl-result'),
-                            '<a href="' + data.downloadUrl + '" target="_blank" rel="noopener">⬇️ Descargar clip</a>');
+                        showResult(data);
                         state.jobId = null;
                         updateMergeButton();
                     } else if (data.status === 'error') {

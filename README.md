@@ -15,6 +15,11 @@ Ya implementados — se configuran desde el propio panel del userscript:
 - **Marca de agua**: texto superpuesto en todos los trozos.
 - **Normalizar volumen** (loudnorm) entre trozos.
 
+- **Música de fondo** (v3): una URL (YouTube, SoundCloud, un mp3 directo...)
+  o un archivo de la carpeta `audio/` del repo. Se puede **mezclar** con el
+  audio original o **reemplazarlo**, con volumen de cada pista, punto de inicio
+  de la música, repetición si es más corta que el clip y fade out de 2 s al final.
+
 Si no activas ningún efecto, el workflow usa la ruta rápida de v1
 (concat sin recodificar). En cuanto configuras cualquier efecto, el
 workflow recodifica con `scripts/build_clip.py`, tarda más
@@ -26,6 +31,24 @@ clip final); los fades se calculan sobre la duración de cada trozo antes
 de acortar por transiciones, así que si el fade y una transición
 contigua duran casi lo mismo pueden solaparse de forma rara — para
 evitarlo, deja algo de margen entre ambos valores.
+
+## Ver online, compartir y música propia (v3)
+
+- **Ver sin descargar:** al terminar, el panel muestra el clip en un reproductor
+  y un enlace **▶ Ver online** que lo reproduce en el navegador (con saltos por
+  la línea de tiempo). Es un enlace del Worker (`/v/<job>`) firmado y con
+  caducidad de **7 días**; también sirve para **copiar** y **compartir**
+  (botón 📤 en móvil). Cualquiera que tenga el enlace puede verlo hasta que caduque.
+  Si YouTube/Twitch bloquean el reproductor incrustado, usa "Ver online".
+- **Descargar** sigue disponible (enlace directo al Release de GitHub).
+- **Música propia:** sube tus pistas (`.mp3`, `.m4a`, `.wav`, `.ogg`, `.flac`...)
+  a la carpeta `audio/` del repo y en el panel escribe solo el nombre
+  (ej. `tema.mp3`). Los nombres no pueden llevar rutas (`/`).
+- Formato de salida: siempre **H.264 (yuv420p) + AAC**, con `faststart`, para que
+  se vea en navegadores, móviles y redes sociales. Si el resultado no cumple, el
+  workflow falla en vez de publicar un archivo que no se ve.
+- Tras actualizar: `cd worker && npm run deploy` y reinstala el userscript
+  (recuerda volver a poner `WORKER_URL` y `CLIENT_TOKEN` en `CONFIG`).
 
 ## Estructura
 
@@ -45,9 +68,21 @@ Sube toda esta carpeta a un repo nuevo, público o privado. Anota `usuario/repo`
 **Settings → Secrets and variables → Actions → New repository secret**:
 
 - `YTDL_COOKIES`: contenido del `cookies.txt` (formato Netscape) exportado
-  de tu navegador logueado en YouTube (extensión "Get cookies.txt LOCALLY"
-  o similar). Necesario porque las IPs de los runners de GitHub Actions
-  están en datacenter y YouTube las bloquea sin cookies de sesión.
+de tu navegador logueado en YouTube (extensión "Get cookies.txt LOCALLY"
+o similar). Necesario porque las IPs de los runners de GitHub Actions
+están en datacenter y YouTube las bloquea sin cookies de sesión. Para que
+no caduquen rápido, expórtalas desde una ventana de incógnito (entra en
+YouTube, abre `https://www.youtube.com/robots.txt`, exporta y cierra la
+ventana sin volver a usar esa sesión). Si un día vuelve a fallar con
+"Sign in to confirm you're not a bot", renueva este secret.
+- `SECRETS_PAT` (opcional, recomendado): renueva `YTDL_COOKIES` automáticamente
+después de cada ejecución, para que las cookies no caduquen. Crea un token
+fine-grained en <https://github.com/settings/personal-access-tokens/new>,
+con acceso solo a este repo y el permiso **Secrets: Read and write**
+(el `GITHUB_TOKEN` automático no puede modificar secrets). Si no lo defines,
+el paso se omite y tendrás que renovar las cookies a mano cuando caduquen.
+- `PROXY_URL` (opcional): proxy `http://usuario:clave@host:puerto` para
+pasarlo a `yt-dlp` si las cookies solas no bastan.
 
 No hace falta crear `GITHUB_TOKEN` aquí: el workflow usa el token
 automático que GitHub Actions inyecta (por eso declara

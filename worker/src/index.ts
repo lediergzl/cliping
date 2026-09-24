@@ -45,6 +45,34 @@ function isAuthorized(request: Request, env: Env): boolean {
 const ASPECTS = new Set(["original", "16:9", "9:16", "1:1"]);
 const TRANSITIONS = new Set(["none", "fade", "dissolve", "wipe"]);
 
+function clamp(n: number, min: number, max: number) {
+  return Math.min(Math.max(n, min), max);
+}
+
+// Audio de fondo: o una URL http(s) (YouTube, SoundCloud, mp3 directo...) o el
+// nombre de un fichero de la carpeta audio/ del repo. Nunca rutas.
+const AUDIO_FILE_RE = /^[\w\- ().]{1,80}\.(mp3|m4a|aac|wav|ogg|opus|flac)$/i;
+
+function sanitizeAudio(a: any) {
+  if (!a || typeof a !== "object") return null;
+  const res: any = {
+    mode: a.mode === "replace" ? "replace" : "mix",
+    volume: clamp(Number(a.volume ?? 0.5), 0, 1),
+    original_volume: clamp(Number(a.original_volume ?? 1), 0, 1),
+    start: clamp(Number(a.start) || 0, 0, 36000),
+    loop: a.loop !== false,
+    fade_out: clamp(Number(a.fade_out ?? 2), 0, 10),
+  };
+  if (typeof a.url === "string" && /^https?:\/\//i.test(a.url.trim()) && a.url.length <= 500) {
+    res.url = a.url.trim();
+  } else if (typeof a.file === "string" && AUDIO_FILE_RE.test(a.file.trim()) && !a.file.includes("..")) {
+    res.file = a.file.trim();
+  } else {
+    return null;
+  }
+  return res;
+}
+
 function sanitizeOutput(out: any) {
   const o = out || {};
   const result: any = {
@@ -54,6 +82,7 @@ function sanitizeOutput(out: any) {
     normalize_audio: !!o.normalize_audio,
     title: null,
     watermark: null,
+    audio: sanitizeAudio(o.audio),
   };
   if (o.title?.text && typeof o.title.text === "string") {
     result.title = {
@@ -143,13 +172,87 @@ async function findRun(env: Env, jobId: string) {
 }
 
 // El workflow publica el Release con tag "clip-<job_id>".
-async function findRelease(env: Env, jobId: string) {
+async function findReleaseAsset(env: Env, jobId: string) {
   const url = `${GH_API}/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/releases/tags/clip-${jobId}`;
   const res = await fetch(url, { headers: ghHeaders(env) });
   if (!res.ok) return null;
   const data: any = await res.json();
   const asset = (data.assets || [])[0];
-  return asset?.browser_download_url || null;
+  return asset ? { id: asset.id as number, url: asset.browser_download_url as string } : null;
+}
+
+// ---------- Enlaces firmados para ver el clip online ----------
+// Un <video> no puede enviar cabeceras, así que /v/<jobId> se protege con una
+// firma HMAC (clave: CLIENT_TOKEN) y caducidad, no con X-Client-Token.
+const JOB_ID_RE = /^\d{10,}-[0-9a-f]{8}$/;
+const LINK_TTL_SECONDS = 7 * 24 * 3600;
+
+async function hmacHex(secret: string, data: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function safeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function signedLink(env: Env, origin: string, jobId: string): Promise<string> {
+  const exp = Math.floor(Date.now() / 1000) + LINK_TTL_SECONDS;
+  const sig = await hmacHex(env.CLIENT_TOKEN, `v:${jobId}:${exp}`);
+  return `${origin}/v/${jobId}?e=${exp}&s=${sig}`;
+}
+
+// Sirve el MP4 del Release "inline" y con soporte de Range (para poder saltar
+// por el vídeo). GitHub lo entrega como descarga (attachment), por eso se hace
+// de intermediario en vez de enlazar directamente.
+async function streamClip(request: Request, env: Env, url: URL, jobId: string): Promise<Response> {
+  const exp = Number(url.searchParams.get("e"));
+  const sig = url.searchParams.get("s") || "";
+  if (!JOB_ID_RE.test(jobId) || !Number.isFinite(exp) || exp < Date.now() / 1000) {
+    return new Response("Enlace caducado o inválido", { status: 403 });
+  }
+  const expected = await hmacHex(env.CLIENT_TOKEN, `v:${jobId}:${exp}`);
+  if (!safeEqual(sig, expected)) return new Response("Firma inválida", { status: 403 });
+
+  const asset = await findReleaseAsset(env, jobId);
+  if (!asset) return new Response("Clip no encontrado", { status: 404 });
+
+  // 1) El API responde 302 hacia una URL temporal de almacenamiento.
+  const first = await fetch(`${GH_API}/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/releases/assets/${asset.id}`, {
+    headers: { ...ghHeaders(env), Accept: "application/octet-stream" },
+    redirect: "manual",
+  });
+  const location = first.headers.get("Location");
+  if (!location) return new Response("No se pudo obtener el clip", { status: 502 });
+
+  // 2) Se pide esa URL (sin credenciales) reenviando el Range del navegador.
+  const range = request.headers.get("Range");
+  const upstream = await fetch(location, {
+    method: request.method === "HEAD" ? "HEAD" : "GET",
+    headers: range ? { Range: range } : {},
+  });
+
+  const headers = new Headers({
+    "Content-Type": "video/mp4",
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "private, max-age=3600",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
+    "Content-Disposition": url.searchParams.get("dl")
+      ? `attachment; filename="clip-${jobId}.mp4"`
+      : `inline; filename="clip-${jobId}.mp4"`,
+  });
+  for (const h of ["Content-Length", "Content-Range"]) {
+    const v = upstream.headers.get(h);
+    if (v) headers.set(h, v);
+  }
+  return new Response(upstream.body, { status: upstream.status, headers });
 }
 
 export default {
@@ -161,9 +264,14 @@ export default {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, X-Client-Token",
+          "Access-Control-Allow-Headers": "Content-Type, X-Client-Token, Range",
         },
       });
+    }
+
+    // Vista online: protegida por enlace firmado (un <video> no envía cabeceras).
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname.startsWith("/v/")) {
+      return streamClip(request, env, url, url.pathname.slice(3));
     }
 
     if (!isAuthorized(request, env)) {
@@ -212,12 +320,15 @@ export default {
         return json({ status: "error", error: `Workflow terminó con: ${run.conclusion}` });
       }
 
-      const downloadUrl = await findRelease(env, jobId);
-      if (!downloadUrl) {
+      const asset = await findReleaseAsset(env, jobId);
+      if (!asset) {
         return json({ status: "processing", progress: 90 });
       }
 
-      return json({ status: "completed", downloadUrl });
+      // previewUrl: se puede reproducir online y compartir (caduca a los 7 días).
+      // downloadUrl: descarga directa desde GitHub.
+      const previewUrl = await signedLink(env, url.origin, jobId);
+      return json({ status: "completed", downloadUrl: asset.url, previewUrl });
     }
 
     return json({ ok: false, error: "Not found" }, 404);
