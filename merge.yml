@@ -1,0 +1,80 @@
+name: Merge Clips
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: 'ID del job (se usa como tag del Release)'
+        required: true
+        type: string
+      payload:
+        description: 'JSON: { url, segments: [{start,end,zoom,transition}], output }'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: merge-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar yt-dlp y ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install -U yt-dlp
+
+      - name: Guardar cookies
+        run: |
+          printf '%s' "${{ secrets.YTDL_COOKIES }}" > cookies.txt
+          if [ ! -s cookies.txt ]; then
+            echo "::error::YTDL_COOKIES está vacío. Configúralo en Settings > Secrets."
+            exit 1
+          fi
+
+      - name: Descargar y recortar segmentos
+        run: |
+          mkdir -p clips
+          printf '%s' '${{ inputs.payload }}' > payload.json
+          URL=$(jq -r '.url' payload.json)
+          COUNT=$(jq '.segments | length' payload.json)
+          echo "URL: $URL — $COUNT segmento(s)"
+          for i in $(seq 0 $((COUNT - 1))); do
+            START=$(jq -r ".segments[$i].start" payload.json)
+            END=$(jq -r ".segments[$i].end" payload.json)
+            IDX=$(printf "%03d" "$i")
+            echo "Segmento $IDX: $START -> $END"
+            yt-dlp \
+              --cookies cookies.txt \
+              --download-sections "*${START}-${END}" \
+              --force-keyframes-at-cuts \
+              -f "bv*+ba/b" \
+              --merge-output-format mp4 \
+              -o "clips/segment_${IDX}.mp4" \
+              "$URL"
+          done
+
+      - name: Unir segmentos (con o sin efectos v2)
+        run: python3 scripts/build_clip.py payload.json clips/ output.mp4
+
+      - name: Publicar Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: clip-${{ inputs.job_id }}
+          name: "Clip ${{ inputs.job_id }}"
+          files: output.mp4
+          draft: false
+          prerelease: false
+
+      - name: Limpiar cookies
+        if: always()
+        run: rm -f cookies.txt payload.json
