@@ -86,8 +86,9 @@ jobs:
           COOKIE_ARGS=()
           if [ -n "$YTDL_COOKIES" ]; then
             printf '%s\n' "$YTDL_COOKIES" > cookies.txt
+            cp cookies.txt cookies.orig.txt   # para detectar si yt-dlp las renueva
             COOKIE_ARGS=(--cookies cookies.txt)
-            echo "Cookies cargadas: $(grep -vc '^#' cookies.txt) líneas"
+            echo "Cookies cargadas: $(wc -l < cookies.txt) líneas"
           else
             echo "::warning::YTDL_COOKIES vacío: YouTube probablemente pedirá iniciar sesión"
           fi
@@ -101,8 +102,10 @@ jobs:
           # Clientes de YouTube a probar, en orden ("" = el predeterminado de yt-dlp)
           CLIENTS=("" "youtube:player_client=tv,mweb" "youtube:player_client=web_safari")
 
-          download_segment() {
-            local start="$1" end="$2" out="$3" cl
+          # Ejecuta yt-dlp con cookies/proxy/PO token probando cada cliente.
+          # --no-playlist evita bajar una lista entera si la URL trae &list=.
+          ytdlp_run() {
+            local cl
             for cl in "${CLIENTS[@]}"; do
               local extra=()
               [ -n "$cl" ] && extra=(--extractor-args "$cl")
@@ -115,12 +118,8 @@ jobs:
                   --remote-components ejs:github \
                   --js-runtimes deno \
                   --retries 3 \
-                  --download-sections "*${start}-${end}" \
-                  --force-keyframes-at-cuts \
-                  -f "bv*+ba/b" \
-                  --merge-output-format mp4 \
-                  -o "$out" \
-                  "$URL"; then
+                  --no-playlist \
+                  "$@"; then
                 return 0
               fi
               sleep 3
@@ -133,11 +132,74 @@ jobs:
             END=$(jq -r ".segments[$i].end" payload.json)
             IDX=$(printf "%03d" "$i")
             echo "Segmento $IDX: $START -> $END"
-            if ! download_segment "$START" "$END" "clips/segment_${IDX}.mp4"; then
+            # Se prefiere H.264+AAC (se reproduce en cualquier sitio); si no existe,
+            # build_clip.py recodifica el resultado.
+            if ! ytdlp_run \
+                --download-sections "*${START}-${END}" \
+                --force-keyframes-at-cuts \
+                -f "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*+ba/b" \
+                --merge-output-format mp4 \
+                -o "clips/segment_${IDX}.mp4" \
+                "$URL"; then
               echo "::error::YouTube bloqueó la descarga con todos los clientes. Renueva las cookies (YTDL_COOKIES, exportadas desde una ventana de incógnito) o usa PROXY_URL / un self-hosted runner."
               exit 1
             fi
           done
+
+          # ---- Audio de fondo (opcional): URL descargable o fichero del repo (audio/) ----
+          AUDIO_URL=$(jq -r '.output.audio.url // empty' payload.json)
+          AUDIO_FILE=$(jq -r '.output.audio.file // empty' payload.json)
+          AUDIO_PATH=""
+          if [ -n "$AUDIO_URL" ]; then
+            echo "Descargando audio de fondo: $AUDIO_URL"
+            if ! ytdlp_run -x --audio-format mp3 --audio-quality 0 -o "music.%(ext)s" "$AUDIO_URL"; then
+              echo "::error::No se pudo descargar el audio de fondo ($AUDIO_URL)"; exit 1
+            fi
+            AUDIO_PATH="music.mp3"
+          elif [ -n "$AUDIO_FILE" ]; then
+            case "$AUDIO_FILE" in
+              */*|*..*) echo "::error::Nombre de audio no válido: $AUDIO_FILE"; exit 1 ;;
+            esac
+            if [ ! -f "audio/$AUDIO_FILE" ]; then
+              echo "::error::No existe audio/$AUDIO_FILE en el repositorio"; exit 1
+            fi
+            AUDIO_PATH="audio/$AUDIO_FILE"
+          fi
+          if [ -n "$AUDIO_PATH" ]; then
+            jq --arg p "$AUDIO_PATH" '.output.audio.path = $p' payload.json > payload.tmp && mv payload.tmp payload.json
+            echo "Audio de fondo listo: $AUDIO_PATH"
+          fi
+
+      # yt-dlp reescribe cookies.txt con las cookies renovadas por YouTube.
+      # Si cambiaron y parecen válidas, se guardan de vuelta en el secret para
+      # que no caduquen. Requiere el secret SECRETS_PAT (ver README); si no
+      # existe, el paso se omite sin afectar al resto del workflow.
+      - name: Renovar cookies guardadas (secret YTDL_COOKIES)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "SECRETS_PAT no definido: no se renuevan las cookies automáticamente"
+            exit 0
+          fi
+          if [ ! -f cookies.txt ] || [ ! -f cookies.orig.txt ]; then
+            echo "Sin cookies que renovar"; exit 0
+          fi
+          if cmp -s cookies.txt cookies.orig.txt; then
+            echo "Cookies sin cambios"; exit 0
+          fi
+
+          OLD=$(grep -c 'youtube\.com' cookies.orig.txt || true)
+          NEW=$(grep -c 'youtube\.com' cookies.txt || true)
+          if ! head -1 cookies.txt | grep -q 'Netscape HTTP Cookie File' \
+             || [ "$NEW" -lt 1 ] || [ $((NEW * 2)) -lt "$OLD" ]; then
+            echo "::warning::Las cookies renovadas no pasan la validación (antes: $OLD, ahora: $NEW líneas de youtube.com); no se actualiza el secret"
+            exit 0
+          fi
+
+          gh secret set YTDL_COOKIES --repo "$GITHUB_REPOSITORY" < cookies.txt
+          echo "✅ Secret YTDL_COOKIES renovado ($OLD -> $NEW líneas de youtube.com)"
 
       - name: Unir segmentos (con o sin efectos v2)
         run: python3 scripts/build_clip.py payload.json clips/ output.mp4
@@ -153,4 +215,4 @@ jobs:
 
       - name: Limpiar archivos temporales
         if: always()
-        run: rm -f payload.json cookies.txt
+        run: rm -f payload.json payload.tmp cookies.txt cookies.orig.txt music.*
