@@ -67,12 +67,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl
           pip install -U yt-dlp yt-dlp-ejs
-          pip install -U bgutil-ytdlp-pot-provider
+          pip install -U "bgutil-ytdlp-pot-provider==2.0.0"
 
       - name: Descargar y recortar segmentos
+        env:
+          PAYLOAD: ${{ inputs.payload }}
+          YTDL_COOKIES: ${{ secrets.YTDL_COOKIES }}
         run: |
           mkdir -p clips
-          printf '%s' '${{ inputs.payload }}' > payload.json
+          printf '%s' "$PAYLOAD" > payload.json
+
+          if [ -z "$YTDL_COOKIES" ]; then
+            echo "::error::El secret YTDL_COOKIES está vacío o no existe (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+          printf '%s\n' "$YTDL_COOKIES" > cookies.txt
+          echo "Cookies cargadas: $(grep -vc '^#' cookies.txt) líneas"
           URL=$(jq -r '.url' payload.json)
           COUNT=$(jq '.segments | length' payload.json)
           echo "URL: $URL — $COUNT segmento(s)"
@@ -82,6 +92,7 @@ jobs:
             IDX=$(printf "%03d" "$i")
             echo "Segmento $IDX: $START -> $END"
             yt-dlp \
+              --cookies cookies.txt \
               --extractor-args "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" \
               --remote-components ejs:github \
               --js-runtimes deno \
@@ -107,4 +118,4 @@ jobs:
 
       - name: Limpiar archivos temporales
         if: always()
-        run: rm -f payload.json
+        run: rm -f payload.json cookies.txt
