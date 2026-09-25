@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YTDL Clipper
 // @namespace    ytdl-clipper
-// @version      0.6.0
+// @version      0.7.0
 // @description  Marca trozos de un directo/VOD de YouTube o Twitch y los une en un clip
 // @match        https://www.youtube.com/*
 // @match        https://www.twitch.tv/*
@@ -28,6 +28,7 @@
         jobId: null,
         pollTimer: null,
         editingIndex: null, // índice del trozo abierto para ajuste fino, o null
+        tlView: null,       // { a, b }: ventana de tiempo que muestra la barra de recorte
     };
 
     // ================== ANCHO DEL PANEL ==================
@@ -68,6 +69,10 @@
         const s = sec % 60;
         if (h > 0) return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
         return m + ':' + String(s).padStart(2, '0');
+    }
+
+    function formatTimePrecise(sec) {
+        return formatTime(sec) + '.' + String(Math.floor((sec % 1) * 10));
     }
 
     function log(...args) { console.log('[YTDL Clipper]', ...args); }
@@ -234,60 +239,59 @@
             #ytdl-clipper-panel {
                 position: fixed; top: 80px; right: 20px;
                 width: ${getSavedPanelWidth()}px; z-index: 99999;
-                background: #18181b; color: #efeff1;
-                border: 1px solid #2f2f35; border-radius: 8px;
+                background: #ffffff; color: #1f1f23;
+                border: 1px solid #d9d9de; border-radius: 8px;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+                font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,0.15);
                 user-select: none;
                 max-width: 95vw;
             }
             #ytdl-clipper-panel.ytdl-collapsed .ytdl-body { display: none; }
-            #ytdl-clipper-panel.ytdl-resizing { user-select: none; }
+            #ytdl-clipper-panel.ytdl-resizing { user-select: none; transition: none; }
+            #ytdl-clipper-panel iframe { pointer-events: none; }
             .ytdl-resize-handle {
                 position: absolute; top: 0; left: -4px; bottom: 0; width: 8px;
                 cursor: ew-resize; z-index: 2;
             }
             .ytdl-resize-handle:hover, #ytdl-clipper-panel.ytdl-resizing .ytdl-resize-handle {
-                background: rgba(145, 71, 255, 0.5);
+                background: rgba(145, 71, 255, 0.35);
             }
-            #ytdl-clipper-panel.ytdl-resizing { transition: none; }
-            #ytdl-clipper-panel iframe { pointer-events: none; }
             .ytdl-header {
                 display: flex; justify-content: space-between; align-items: center;
-                padding: 8px 12px; background: #0e0e10;
-                border-bottom: 1px solid #2f2f35; border-radius: 8px 8px 0 0;
+                padding: 8px 12px; background: #f4f4f6; color: #1f1f23;
+                border-bottom: 1px solid #d9d9de; border-radius: 8px 8px 0 0;
                 font-weight: 600;
             }
             .ytdl-toggle {
-                background: transparent; border: none; color: #adadb8;
+                background: transparent; border: none; color: #6b6b74;
                 cursor: pointer; font-size: 16px; padding: 0 4px;
             }
-            .ytdl-toggle:hover { color: #fff; }
+            .ytdl-toggle:hover { color: #1f1f23; }
             .ytdl-body { padding: 10px 12px; }
             .ytdl-status {
-                font-size: 11px; color: #adadb8; margin-bottom: 8px;
-                padding: 4px 6px; background: #0e0e10; border-radius: 4px;
+                font-size: 11px; color: #6b6b74; margin-bottom: 8px;
+                padding: 4px 6px; background: #f4f4f6; border-radius: 4px;
                 text-align: center;
             }
             .ytdl-mark-area { display: flex; gap: 6px; margin-bottom: 10px; }
             .ytdl-effects {
-                margin-bottom: 10px; background: #0e0e10; border-radius: 4px; padding: 4px 6px;
+                margin-bottom: 10px; background: #f4f4f6; border-radius: 4px; padding: 4px 6px;
             }
             .ytdl-effects summary {
-                cursor: pointer; padding: 4px 2px; font-size: 12px; color: #adadb8; outline: none;
+                cursor: pointer; padding: 4px 2px; font-size: 12px; color: #6b6b74; outline: none;
             }
-            .ytdl-effects summary:hover { color: #fff; }
+            .ytdl-effects summary:hover { color: #1f1f23; }
             .ytdl-effects-body { padding: 6px 2px 2px; }
             .ytdl-eff-row {
                 display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 11px;
             }
             .ytdl-eff-row:last-child { margin-bottom: 0; }
             .ytdl-eff-row select, .ytdl-eff-row input[type="text"] {
-                flex: 1; background: #1f1f23; color: #efeff1; border: 1px solid #2f2f35;
+                flex: 1; background: #ffffff; color: #1f1f23; border: 1px solid #c8c8cf;
                 border-radius: 3px; padding: 4px 6px; font-size: 11px; min-width: 0;
             }
             .ytdl-eff-row input[type="number"] {
-                width: 42px; background: #1f1f23; color: #efeff1; border: 1px solid #2f2f35;
+                width: 42px; background: #ffffff; color: #1f1f23; border: 1px solid #c8c8cf;
                 border-radius: 3px; padding: 4px; font-size: 11px;
             }
             .ytdl-eff-row label { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
@@ -302,59 +306,101 @@
             .ytdl-btn-danger { background: #eb0400; color: #fff; }
             .ytdl-btn-merge { background: #00b84c; color: #fff; width: 100%; }
             .ytdl-segments {
-                max-height: 180px; overflow-y: auto; margin-bottom: 10px;
-                background: #0e0e10; border-radius: 4px; padding: 6px;
+                max-height: 320px; overflow-y: auto; margin-bottom: 10px;
+                background: #f4f4f6; border-radius: 4px; padding: 6px;
             }
-            .ytdl-empty { color: #6b6b74; text-align: center; padding: 12px 0; font-size: 12px; }
+            .ytdl-empty { color: #8a8a94; text-align: center; padding: 12px 0; font-size: 12px; }
             .ytdl-segment {
-                display: flex; align-items: center; justify-content: space-between;
                 padding: 5px 6px; margin-bottom: 4px;
-                background: #1f1f23; border-radius: 3px; font-size: 12px;
+                background: #ffffff; border: 1px solid #e2e2e8; border-radius: 4px; font-size: 12px;
             }
             .ytdl-segment:last-child { margin-bottom: 0; }
-            .ytdl-segment-time { color: #efeff1; font-family: monospace; }
+            .ytdl-segment-row { display: flex; align-items: center; justify-content: space-between; }
+            .ytdl-segment-time { color: #1f1f23; font-family: monospace; }
+            .ytdl-segment-dur { color: #8a8a94; }
             .ytdl-segment-actions { display: flex; gap: 4px; }
             .ytdl-segment-btn {
-                background: transparent; border: none; color: #adadb8;
+                background: transparent; border: none; color: #6b6b74;
                 cursor: pointer; font-size: 14px; padding: 0 4px;
             }
-            .ytdl-segment-btn:hover { color: #fff; }
+            .ytdl-segment-btn:hover { color: #9147ff; }
+            .ytdl-segment-btn.ytdl-active { color: #9147ff; font-weight: 700; }
+
+            /* ---- Editor de trozo ---- */
             .ytdl-segment-edit {
-                margin-top: 6px; padding: 6px; background: #0e0e10;
-                border-radius: 3px; font-size: 11px;
+                margin-top: 6px; padding: 6px; background: #f8f8fa;
+                border-radius: 4px; font-size: 11px;
             }
             .ytdl-edit-row {
-                display: flex; align-items: center; gap: 4px; margin-bottom: 4px;
+                display: flex; align-items: center; gap: 4px; margin-bottom: 4px; flex-wrap: wrap;
             }
             .ytdl-edit-row:last-child { margin-bottom: 0; }
-            .ytdl-edit-label { width: 34px; color: #adadb8; }
-            .ytdl-edit-time { font-family: monospace; width: 62px; }
+            .ytdl-edit-label { width: 34px; color: #6b6b74; }
+            .ytdl-edit-time { font-family: monospace; width: 62px; color: #1f1f23; }
             .ytdl-nudge-btn {
-                background: #2f2f35; border: none; color: #efeff1;
+                background: #e5e5ea; border: none; color: #1f1f23;
                 border-radius: 3px; cursor: pointer; font-size: 10px;
                 padding: 3px 6px; font-family: monospace;
             }
-            .ytdl-nudge-btn:hover { background: #3f3f46; }
+            .ytdl-nudge-btn:hover { background: #d4d4dc; }
             .ytdl-edit-seek {
                 background: #9147ff; border: none; color: #fff;
                 border-radius: 3px; cursor: pointer; font-size: 10px;
                 padding: 3px 6px; margin-left: auto;
             }
             .ytdl-edit-seek:hover { opacity: 0.85; }
-            .ytdl-eff-sep { margin-top: 8px; padding-top: 6px; border-top: 1px solid #2f2f35; font-weight: 600; color: #adadb8; }
+
+            /* ---- Timeline arrastrable ---- */
+            .ytdl-tl-wrap { margin: 4px 0 8px; }
+            .ytdl-tl-track {
+                position: relative; height: 34px; background: #e4e4e9;
+                border-radius: 6px; cursor: pointer; touch-action: none;
+            }
+            .ytdl-tl-range {
+                position: absolute; top: 0; bottom: 0; background: #9147ff;
+                border-radius: 6px; opacity: 0.85; pointer-events: none;
+            }
+            .ytdl-tl-handle {
+                position: absolute; top: -4px; bottom: -4px; width: 14px;
+                margin-left: -7px; background: #ffffff;
+                border: 2px solid #6d2fd6; border-radius: 4px;
+                cursor: ew-resize; box-sizing: border-box; z-index: 2;
+            }
+            .ytdl-tl-handle::after {
+                content: ''; position: absolute; top: 50%; left: 50%;
+                width: 2px; height: 10px; margin: -5px 0 0 -1px;
+                background: #6d2fd6; border-radius: 1px;
+            }
+            .ytdl-tl-playhead {
+                position: absolute; top: 0; bottom: 0; width: 2px;
+                margin-left: -1px; background: #eb0400; pointer-events: none; z-index: 1;
+            }
+            .ytdl-tl-labels {
+                display: flex; justify-content: space-between;
+                font-family: monospace; font-size: 10px; color: #6b6b74; margin-top: 3px;
+            }
+            .ytdl-tl-hint { font-size: 10px; color: #8a8a94; margin-top: 2px; }
+
+            .ytdl-edit-sep { border-top: 1px solid #e2e2e8; padding-top: 6px; margin-top: 4px; }
+            .ytdl-eff-input { background: #ffffff; color: #1f1f23; border: 1px solid #c8c8cf; border-radius: 3px; font-size: 11px; }
+            .ytdl-eff-input[type="number"] { width: 44px; padding: 2px; }
+            .ytdl-eff-input[type="checkbox"] { width: auto; }
+
+            .ytdl-eff-sep { margin-top: 8px; padding-top: 6px; border-top: 1px solid #d9d9de; font-weight: 600; color: #6b6b74; }
             .ytdl-eff-row input[type="range"] { flex: 1; min-width: 0; }
             .ytdl-eff-val { width: 34px; text-align: right; font-family: monospace; }
+
             .ytdl-result { margin-top: 8px; font-size: 12px; }
             .ytdl-result a { color: #9147ff; text-decoration: none; font-weight: 600; }
             .ytdl-result a:hover { text-decoration: underline; }
             .ytdl-video { width: 100%; max-height: 220px; background: #000; border-radius: 4px; margin-bottom: 6px; }
             .ytdl-result-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
             .ytdl-mini-btn {
-                background: #2f2f35; border: none; color: #efeff1; border-radius: 3px;
+                background: #e5e5ea; border: none; color: #1f1f23; border-radius: 3px;
                 cursor: pointer; font-size: 11px; padding: 4px 8px;
             }
-            .ytdl-mini-btn:hover { background: #3f3f46; }
-            .ytdl-hint { margin-top: 6px; color: #adadb8; font-size: 11px; }
+            .ytdl-mini-btn:hover { background: #d4d4dc; }
+            .ytdl-hint { margin-top: 6px; color: #6b6b74; font-size: 11px; }
         `;
         document.head.appendChild(style);
 
@@ -378,6 +424,16 @@
         if (el) el.textContent = text;
     }
 
+    // ================== RENDER ==================
+    // Ventana de tiempo que muestra la barra: el trozo con un margen de 30s a cada lado
+    function computeTimelineView(seg) {
+        const video = getVideo();
+        const dur = video && video.duration && isFinite(video.duration) ? video.duration : seg.end + 30;
+        const a = Math.max(0, seg.start - 30);
+        const b = Math.min(dur, seg.end + 30);
+        return { a, b: Math.max(b, a + 1) };
+    }
+
     function renderSegments() {
         const container = document.getElementById('ytdl-segments');
         if (!container) return;
@@ -385,25 +441,42 @@
         if (state.segments.length === 0) {
             setHTML(container, '<div class="ytdl-empty">Sin trozos marcados</div>');
         } else {
-            setHTML(container, state.segments.map((seg, i) => `
+            setHTML(container, state.segments.map((seg, i) => {
+                const editing = state.editingIndex === i;
+                if (editing) state.tlView = computeTimelineView(seg);
+                return `
                 <div class="ytdl-segment" data-index="${i}">
-                    <div style="display:flex; align-items:center; justify-content:space-between;">
+                    <div class="ytdl-segment-row">
                         <span class="ytdl-segment-time">
                             ${i + 1}. ${formatTime(seg.start)} → ${formatTime(seg.end)}
-                            <span style="color:#6b6b74">(${formatTime(seg.end - seg.start)})</span>
+                            <span class="ytdl-segment-dur">(${formatTime(seg.end - seg.start)})</span>
                         </span>
                         <span class="ytdl-segment-actions">
-                            <button class="ytdl-segment-btn" data-action="edit" title="Ajustar recorte">✎</button>
+                            <button class="ytdl-segment-btn ${editing ? 'ytdl-active' : ''}" data-action="edit" title="Ajustar recorte">✎</button>
                             <button class="ytdl-segment-btn" data-action="up" title="Subir">↑</button>
                             <button class="ytdl-segment-btn" data-action="down" title="Bajar">↓</button>
                             <button class="ytdl-segment-btn" data-action="delete" title="Borrar">✕</button>
                         </span>
                     </div>
-                    ${state.editingIndex === i ? `
+                    ${editing ? `
                     <div class="ytdl-segment-edit">
+                        <div class="ytdl-tl-wrap" id="ytdl-tl">
+                            <div class="ytdl-tl-track">
+                                <div class="ytdl-tl-range"></div>
+                                <div class="ytdl-tl-playhead"></div>
+                                <div class="ytdl-tl-handle" data-edge="start"></div>
+                                <div class="ytdl-tl-handle" data-edge="end"></div>
+                            </div>
+                            <div class="ytdl-tl-labels">
+                                <span class="ytdl-tl-from">${formatTime(state.tlView.a)}</span>
+                                <span class="ytdl-tl-cur">${formatTimePrecise(seg.start)} → ${formatTimePrecise(seg.end)}</span>
+                                <span class="ytdl-tl-to">${formatTime(state.tlView.b)}</span>
+                            </div>
+                            <div class="ytdl-tl-hint">Arrastra los bordes para recortar · clic en la barra para ver ese punto</div>
+                        </div>
                         <div class="ytdl-edit-row">
                             <span class="ytdl-edit-label">Inicio</span>
-                            <span class="ytdl-edit-time">${formatTime(seg.start)}</span>
+                            <span class="ytdl-edit-time">${formatTimePrecise(seg.start)}</span>
                             <button class="ytdl-nudge-btn" data-edge="start" data-delta="-1">-1s</button>
                             <button class="ytdl-nudge-btn" data-edge="start" data-delta="-0.1">-.1</button>
                             <button class="ytdl-nudge-btn" data-edge="start" data-delta="0.1">+.1</button>
@@ -412,7 +485,7 @@
                         </div>
                         <div class="ytdl-edit-row">
                             <span class="ytdl-edit-label">Fin</span>
-                            <span class="ytdl-edit-time">${formatTime(seg.end)}</span>
+                            <span class="ytdl-edit-time">${formatTimePrecise(seg.end)}</span>
                             <button class="ytdl-nudge-btn" data-edge="end" data-delta="-1">-1s</button>
                             <button class="ytdl-nudge-btn" data-edge="end" data-delta="-0.1">-.1</button>
                             <button class="ytdl-nudge-btn" data-edge="end" data-delta="0.1">+.1</button>
@@ -425,9 +498,9 @@
                         <div class="ytdl-edit-row">
                             <button class="ytdl-nudge-btn" data-edge="end" data-action="snap">● Fijar fin en playhead</button>
                         </div>
-                        <div class="ytdl-edit-row" style="border-top:1px solid #2f2f35; padding-top:6px;">
+                        <div class="ytdl-edit-row ytdl-edit-sep">
                             <label><input type="checkbox" class="ytdl-eff-input" data-field="zoomEnabled" ${seg.zoomEnabled ? 'checked' : ''}> Zoom</label>
-                            <input type="number" class="ytdl-eff-input" data-field="zoomFactor" value="${seg.zoomFactor}" min="1.05" max="3" step="0.05" style="width:44px">
+                            <input type="number" class="ytdl-eff-input" data-field="zoomFactor" value="${seg.zoomFactor}" min="1.05" max="3" step="0.05">
                             <label><input type="checkbox" class="ytdl-eff-input" data-field="kenburns" ${seg.kenburns ? 'checked' : ''}> Ken Burns</label>
                         </div>
                         <div class="ytdl-edit-row">
@@ -438,17 +511,16 @@
                                 <option value="dissolve" ${seg.transitionType === 'dissolve' ? 'selected' : ''}>Dissolve</option>
                                 <option value="wipe" ${seg.transitionType === 'wipe' ? 'selected' : ''}>Wipe</option>
                             </select>
-                            <input type="number" class="ytdl-eff-input" data-field="transitionDuration" value="${seg.transitionDuration}" min="0.2" max="3" step="0.1" style="width:40px">s
+                            <input type="number" class="ytdl-eff-input" data-field="transitionDuration" value="${seg.transitionDuration}" min="0.2" max="3" step="0.1">s
                         </div>
-                    </div>
-                    ` : ''}
-                </div>
-            `).join(''));
+                    </div>` : ''}
+                </div>`;
+            }).join(''));
 
             container.querySelectorAll('.ytdl-segment-btn[data-action]').forEach(btn => {
                 btn.onclick = (e) => {
-                    const idx = parseInt(e.target.closest('.ytdl-segment').dataset.index);
-                    const action = e.target.dataset.action;
+                    const idx = parseInt(e.currentTarget.closest('.ytdl-segment').dataset.index, 10);
+                    const action = e.currentTarget.dataset.action;
                     if (action === 'delete') {
                         state.segments.splice(idx, 1);
                         if (state.editingIndex === idx) state.editingIndex = null;
@@ -465,41 +537,133 @@
 
             container.querySelectorAll('.ytdl-nudge-btn[data-delta]').forEach(btn => {
                 btn.onclick = (e) => {
-                    const idx = parseInt(e.target.closest('.ytdl-segment').dataset.index);
-                    nudgeSegment(idx, e.target.dataset.edge, parseFloat(e.target.dataset.delta));
+                    const idx = parseInt(e.currentTarget.closest('.ytdl-segment').dataset.index, 10);
+                    nudgeSegment(idx, e.currentTarget.dataset.edge, parseFloat(e.currentTarget.dataset.delta));
                 };
             });
 
             container.querySelectorAll('[data-action="seek"]').forEach(btn => {
                 btn.onclick = (e) => {
-                    const idx = parseInt(e.target.closest('.ytdl-segment').dataset.index);
-                    seekToEdge(idx, e.target.dataset.edge);
+                    const idx = parseInt(e.currentTarget.closest('.ytdl-segment').dataset.index, 10);
+                    seekToEdge(idx, e.currentTarget.dataset.edge);
                 };
             });
 
             container.querySelectorAll('[data-action="snap"]').forEach(btn => {
                 btn.onclick = (e) => {
-                    const idx = parseInt(e.target.closest('.ytdl-segment').dataset.index);
-                    snapEdgeToPlayhead(idx, e.target.dataset.edge);
+                    const idx = parseInt(e.currentTarget.closest('.ytdl-segment').dataset.index, 10);
+                    snapEdgeToPlayhead(idx, e.currentTarget.dataset.edge);
                 };
             });
 
             container.querySelectorAll('.ytdl-eff-input[data-field]').forEach(input => {
                 input.onchange = (e) => {
-                    const idx = parseInt(e.target.closest('.ytdl-segment').dataset.index);
+                    const idx = parseInt(e.currentTarget.closest('.ytdl-segment').dataset.index, 10);
                     const seg = state.segments[idx];
                     if (!seg) return;
-                    const field = e.target.dataset.field;
-                    if (e.target.type === 'checkbox') seg[field] = e.target.checked;
-                    else if (e.target.type === 'number') seg[field] = parseFloat(e.target.value) || 0;
-                    else seg[field] = e.target.value;
+                    const field = e.currentTarget.dataset.field;
+                    if (e.currentTarget.type === 'checkbox') seg[field] = e.currentTarget.checked;
+                    else if (e.currentTarget.type === 'number') seg[field] = parseFloat(e.currentTarget.value) || 0;
+                    else seg[field] = e.currentTarget.value;
                 };
             });
+
+            bindTimeline();
         }
+        updateTimelinePlayhead();
         updateMergeButton();
     }
 
-    // ================== AJUSTE FINO (recorte al unir) ==================
+    // ================== TIMELINE ARRASTRABLE ==================
+    function bindTimeline() {
+        const wrap = document.getElementById('ytdl-tl');
+        if (!wrap || state.editingIndex === null) return;
+
+        const idx = state.editingIndex;
+        const seg = state.segments[idx];
+        const view = state.tlView;
+        const track = wrap.querySelector('.ytdl-tl-track');
+        const range = wrap.querySelector('.ytdl-tl-range');
+        const handles = {
+            start: wrap.querySelector('.ytdl-tl-handle[data-edge="start"]'),
+            end: wrap.querySelector('.ytdl-tl-handle[data-edge="end"]'),
+        };
+        const lblCur = wrap.querySelector('.ytdl-tl-cur');
+
+        const span = () => view.b - view.a;
+        const pct = (t) => ((t - view.a) / span()) * 100;
+        const secondsFromEvent = (ev) => {
+            const rect = track.getBoundingClientRect();
+            const x = Math.min(Math.max(ev.clientX - rect.left, 0), rect.width);
+            return view.a + (x / rect.width) * span();
+        };
+
+        function paint() {
+            range.style.left = pct(seg.start) + '%';
+            range.style.width = (pct(seg.end) - pct(seg.start)) + '%';
+            handles.start.style.left = pct(seg.start) + '%';
+            handles.end.style.left = pct(seg.end) + '%';
+            lblCur.textContent = formatTimePrecise(seg.start) + ' → ' + formatTimePrecise(seg.end);
+        }
+
+        function seekVideo(t) {
+            const video = getVideo();
+            if (video) video.currentTime = t;
+        }
+
+        function startDrag(ev, edge) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const MIN_LEN = 0.1;
+
+            function onMove(e) {
+                const t = secondsFromEvent(e);
+                if (edge === 'start') {
+                    seg.start = Math.min(Math.max(view.a, t), seg.end - MIN_LEN);
+                } else {
+                    seg.end = Math.max(Math.min(view.b, t), seg.start + MIN_LEN);
+                }
+                paint();
+                seekVideo(seg[edge]);
+            }
+
+            function onUp() {
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onUp);
+                renderSegments();
+            }
+
+            window.addEventListener('pointermove', onMove);
+            window.addEventListener('pointerup', onUp);
+        }
+
+        handles.start.addEventListener('pointerdown', (ev) => startDrag(ev, 'start'));
+        handles.end.addEventListener('pointerdown', (ev) => startDrag(ev, 'end'));
+
+        // Clic en la barra (fuera de los manejadores): saltar el vídeo a ese punto
+        track.addEventListener('pointerdown', (ev) => {
+            if (ev.target !== track && !ev.target.classList.contains('ytdl-tl-range')) return;
+            seekVideo(secondsFromEvent(ev));
+        });
+
+        paint();
+    }
+
+    function updateTimelinePlayhead() {
+        const wrap = document.getElementById('ytdl-tl');
+        if (!wrap || !state.tlView) return;
+        const video = getVideo();
+        if (!video) return;
+        const { a, b } = state.tlView;
+        const t = video.currentTime;
+        const ph = wrap.querySelector('.ytdl-tl-playhead');
+        if (!ph) return;
+        const visible = t >= a && t <= b;
+        ph.style.display = visible ? '' : 'none';
+        ph.style.left = ((t - a) / (b - a)) * 100 + '%';
+    }
+
+    // ================== AJUSTE FINO ==================
     function nudgeSegment(idx, edge, delta) {
         const seg = state.segments[idx];
         if (!seg) return;
@@ -738,6 +902,8 @@
                 state.segments = [];
                 state.marking = null;
                 state.jobId = null;
+                state.editingIndex = null;
+                state.tlView = null;
                 if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
                 const result = document.getElementById('ytdl-result');
                 if (result) setHTML(result, '');
@@ -747,6 +913,8 @@
                 if (btnEnd) btnEnd.disabled = true;
                 setStatus('Listo');
                 renderSegments();
+            } else if (state.editingIndex !== null) {
+                updateTimelinePlayhead();
             }
         }, 1000);
     }
