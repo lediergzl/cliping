@@ -1,11 +1,14 @@
 // ==UserScript==
 // @name         YTDL Clipper
 // @namespace    ytdl-clipper
-// @version      0.9.0
+// @version      0.9.1
 // @description  Marca trozos de un directo/VOD de YouTube o Twitch y los une en un clip
 // @match        https://www.youtube.com/*
 // @match        https://www.twitch.tv/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
 // @connect      *
 // @run-at       document-idle
 // ==/UserScript==
@@ -38,14 +41,82 @@
     const PANEL_WIDTH_MAX = 900;
     const PANEL_WIDTH_DEFAULT = 340;
 
+    // ================== PERSISTENCIA (GM_*) ==================
+    // Usamos GM_setValue/GM_getValue en vez de localStorage: es la API pensada
+    // para persistencia de userscripts y, a diferencia de localStorage, no
+    // depende del origin de la página ni de si el user script corre en un
+    // contexto aislado (algo que puede pasar en Chrome/Edge con Tampermonkey
+    // en Manifest V3). Si por lo que sea GM_setValue/GM_getValue no están
+    // disponibles (otro gestor de userscripts más antiguo), caemos a
+    // localStorage como red de seguridad.
+    function gmGet(key, fallback) {
+        try {
+            if (typeof GM_getValue === 'function') return GM_getValue(key, fallback);
+        } catch (e) { /* ignorar */ }
+        try {
+            const raw = localStorage.getItem(key);
+            return raw === null ? fallback : raw;
+        } catch (e) { return fallback; }
+    }
+
+    function gmSet(key, value) {
+        try {
+            if (typeof GM_setValue === 'function') { GM_setValue(key, value); return; }
+        } catch (e) { /* ignorar */ }
+        try { localStorage.setItem(key, String(value)); } catch (e) { /* ignorar */ }
+    }
+
+    function gmDelete(key) {
+        try {
+            if (typeof GM_deleteValue === 'function') { GM_deleteValue(key); return; }
+        } catch (e) { /* ignorar */ }
+        try { localStorage.removeItem(key); } catch (e) { /* ignorar */ }
+    }
+
     function getSavedPanelWidth() {
-        const raw = parseInt(localStorage.getItem(PANEL_WIDTH_KEY), 10);
+        const raw = parseInt(gmGet(PANEL_WIDTH_KEY, PANEL_WIDTH_DEFAULT), 10);
         if (Number.isNaN(raw)) return PANEL_WIDTH_DEFAULT;
         return Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, raw));
     }
 
     function savePanelWidth(px) {
-        try { localStorage.setItem(PANEL_WIDTH_KEY, String(px)); } catch (e) { /* ignorar */ }
+        gmSet(PANEL_WIDTH_KEY, px);
+    }
+
+    // ---- Respaldo de trozos por vídeo ----
+    // Guarda los trozos marcados bajo una clave por vídeo (getVideoKey()), para
+    // que un cambio de vídeo (real o mal detectado) o un recargo de página no
+    // borre el trabajo del usuario sin remedio. Se descartan respaldos de más
+    // de 6h para no resucitar trozos de una sesión de marcado ya olvidada.
+    const SEGMENTS_KEY_PREFIX = 'ytdl-clipper-segments:';
+    const SEGMENTS_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+    function saveSegmentsFor(videoKey) {
+        if (!videoKey) return;
+        if (!state.segments || state.segments.length === 0) {
+            gmDelete(SEGMENTS_KEY_PREFIX + videoKey);
+            return;
+        }
+        try {
+            gmSet(SEGMENTS_KEY_PREFIX + videoKey, JSON.stringify({
+                segments: state.segments,
+                savedAt: Date.now(),
+            }));
+        } catch (e) { /* ignorar */ }
+    }
+
+    function loadSegmentsFor(videoKey) {
+        const raw = gmGet(SEGMENTS_KEY_PREFIX + videoKey, null);
+        if (!raw) return null;
+        try {
+            const parsed = JSON.parse(raw);
+            if (!parsed || !Array.isArray(parsed.segments) || parsed.segments.length === 0) return null;
+            if (Date.now() - (parsed.savedAt || 0) > SEGMENTS_MAX_AGE_MS) {
+                gmDelete(SEGMENTS_KEY_PREFIX + videoKey);
+                return null;
+            }
+            return parsed.segments;
+        } catch (e) { return null; }
     }
 
     // ================== UTILIDADES ==================
@@ -173,6 +244,50 @@
                 </section>
 
                 <section class="ytdl-section">
+                    <details class="ytdl-effects" id="ytdl-campaign" open>
+                        <summary class="ytdl-section-head ytdl-summary">
+                            <h3 class="ytdl-section-title">Campaña</h3>
+                            <span class="ytdl-chevron">▾</span>
+                        </summary>
+                        <div class="ytdl-hint">Reglas y recompensa de la campaña que estés siguiendo ahora mismo — edítalas cuando cambies de brief.</div>
+
+                        <div class="ytdl-group">
+                            <div class="ytdl-group-title">Checklist antes de publicar</div>
+                            <div class="ytdl-segments" id="ytdl-checklist"></div>
+                            <div class="ytdl-field">
+                                <input type="text" id="ytdl-cl-new-text" class="ytdl-input" placeholder="Nueva regla del brief…">
+                                <button id="ytdl-cl-add" class="ytdl-btn ytdl-btn-secondary">Añadir</button>
+                            </div>
+                        </div>
+
+                        <div class="ytdl-group">
+                            <div class="ytdl-group-title">Calculadora de recompensa</div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="ytdl-calc-rate">$ por 1.000 visitas</label>
+                                <input type="number" id="ytdl-calc-rate" class="ytdl-input ytdl-input-num" min="0" step="0.1" placeholder="0">
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="ytdl-calc-cap">Tope por vídeo ($)</label>
+                                <input type="number" id="ytdl-calc-cap" class="ytdl-input ytdl-input-num" min="0" step="1" placeholder="Sin tope">
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="ytdl-calc-min">Mínimo del perfil</label>
+                                <input type="number" id="ytdl-calc-min" class="ytdl-input ytdl-input-num" min="0" step="100" placeholder="0">
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="ytdl-calc-video">Visitas de este vídeo</label>
+                                <input type="number" id="ytdl-calc-video" class="ytdl-input ytdl-input-num" min="0" step="100" placeholder="0">
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="ytdl-calc-total">Total en tu perfil</label>
+                                <input type="number" id="ytdl-calc-total" class="ytdl-input ytdl-input-num" min="0" step="100" placeholder="0">
+                            </div>
+                            <div class="ytdl-hint" id="ytdl-calc-out">Rellena las reglas de arriba para estimar tu recompensa.</div>
+                        </div>
+                    </details>
+                </section>
+
+                <section class="ytdl-section">
                     <details class="ytdl-effects">
                         <summary class="ytdl-section-head ytdl-summary">
                             <h3 class="ytdl-section-title">Efectos</h3>
@@ -236,6 +351,13 @@
                                     <option value="bottom" selected>Abajo</option>
                                 </select>
                             </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-badge"><input type="checkbox" id="eff-badge"> Insignia (caja pequeña abajo-izq.)</label>
+                                <span class="ytdl-inline">
+                                    <input type="text" id="eff-badge-text" class="ytdl-input" placeholder="Texto (opcional)">
+                                </span>
+                            </div>
+                            <div class="ytdl-hint">Genérica: úsala si tu brief actual pide marcar la fuente (canal, cuenta, etc.) en el vídeo.</div>
                         </div>
 
                         <div class="ytdl-group">
@@ -599,7 +721,135 @@
             el.addEventListener('input', () => { document.getElementById(out).textContent = el.value + '%'; });
         });
 
+        setupCampaignPanel();
         renderSegments();
+    }
+
+    // ================== SECCIÓN CAMPAÑA ==================
+    // Todo lo de aquí es una plantilla reutilizable, no reglas de una campaña
+    // concreta: el checklist se edita a mano (añadir/quitar puntos) y los
+    // parámetros de la calculadora (tarifa, tope, mínimo) se guardan tal cual
+    // los rellene el usuario, para adaptarse al brief que toque en cada
+    // momento. Nada de esto va en el payload al Worker: es solo ayuda local.
+    const CAMPAIGN_KEYS = {
+        badgeText: 'ytdl-clipper-badge-text',
+        checklist: 'ytdl-clipper-checklist-items', // JSON: [{ id, text, done }]
+        rate: 'ytdl-clipper-calc-rate',
+        cap: 'ytdl-clipper-calc-cap',
+        min: 'ytdl-clipper-calc-min',
+    };
+    const DEFAULT_CHECKLIST = [
+        { id: 'c1', text: 'Cuenta/perfil configurados según el brief', done: false },
+        { id: 'c2', text: 'Título o gancho añadido al clip', done: false },
+        { id: 'c3', text: 'Formato de plataforma respetado (aspecto, duración…)', done: false },
+        { id: 'c4', text: 'Clip nuevo, no reutilizado tal cual', done: false },
+    ];
+
+    function loadChecklist() {
+        try {
+            const raw = gmGet(CAMPAIGN_KEYS.checklist, null);
+            const parsed = raw ? JSON.parse(raw) : null;
+            if (Array.isArray(parsed) && parsed.length) return parsed;
+        } catch (e) { /* ignorar */ }
+        return DEFAULT_CHECKLIST.slice();
+    }
+
+    function saveChecklist(items) {
+        gmSet(CAMPAIGN_KEYS.checklist, JSON.stringify(items));
+    }
+
+    function renderChecklist(items) {
+        const box = document.getElementById('ytdl-checklist');
+        if (items.length === 0) {
+            setHTML(box, '<div class="ytdl-hint">Sin puntos todavía — añade los del brief que estés siguiendo.</div>');
+            return;
+        }
+        setHTML(box, items.map((it) => `
+            <div class="ytdl-field ytdl-cl-row" data-id="${escAttr(it.id)}">
+                <label class="ytdl-check" style="flex:1">
+                    <input type="checkbox" class="ytdl-cl-check" ${it.done ? 'checked' : ''}>
+                    <span>${escAttr(it.text)}</span>
+                </label>
+                <button class="ytdl-icon-btn ytdl-cl-remove" title="Quitar">✕</button>
+            </div>
+        `).join(''));
+        box.querySelectorAll('.ytdl-cl-row').forEach((row) => {
+            const id = row.dataset.id;
+            row.querySelector('.ytdl-cl-check').addEventListener('change', (e) => {
+                const items2 = loadChecklist();
+                const item = items2.find(i => i.id === id);
+                if (item) { item.done = e.target.checked; saveChecklist(items2); }
+            });
+            row.querySelector('.ytdl-cl-remove').addEventListener('click', () => {
+                saveChecklist(loadChecklist().filter(i => i.id !== id));
+                renderChecklist(loadChecklist());
+            });
+        });
+    }
+
+    function setupCampaignPanel() {
+        // Insignia: texto libre, sin valor por defecto atado a ningún canal/marca.
+        const badgeCheck = document.getElementById('eff-badge');
+        const badgeText = document.getElementById('eff-badge-text');
+        const savedBadge = gmGet(CAMPAIGN_KEYS.badgeText, '');
+        if (savedBadge) badgeText.value = savedBadge;
+        badgeText.addEventListener('change', () => gmSet(CAMPAIGN_KEYS.badgeText, badgeText.value.trim()));
+        badgeText.addEventListener('input', () => { if (badgeText.value.trim()) badgeCheck.checked = true; });
+
+        // Checklist editable.
+        renderChecklist(loadChecklist());
+        document.getElementById('ytdl-cl-add').addEventListener('click', () => {
+            const input = document.getElementById('ytdl-cl-new-text');
+            const text = input.value.trim();
+            if (!text) return;
+            const items = loadChecklist();
+            items.push({ id: 'c' + Date.now(), text, done: false });
+            saveChecklist(items);
+            renderChecklist(items);
+            input.value = '';
+        });
+
+        // Calculadora: tarifa/tope/mínimo son los del brief actual, editables y persistidos.
+        const calcRate = document.getElementById('ytdl-calc-rate');
+        const calcCap = document.getElementById('ytdl-calc-cap');
+        const calcMin = document.getElementById('ytdl-calc-min');
+        const calcVideo = document.getElementById('ytdl-calc-video');
+        const calcTotal = document.getElementById('ytdl-calc-total');
+        const calcOut = document.getElementById('ytdl-calc-out');
+
+        calcRate.value = gmGet(CAMPAIGN_KEYS.rate, '');
+        calcCap.value = gmGet(CAMPAIGN_KEYS.cap, '');
+        calcMin.value = gmGet(CAMPAIGN_KEYS.min, '');
+
+        const updateCalc = () => {
+            gmSet(CAMPAIGN_KEYS.rate, calcRate.value);
+            gmSet(CAMPAIGN_KEYS.cap, calcCap.value);
+            gmSet(CAMPAIGN_KEYS.min, calcMin.value);
+
+            const rate = parseFloat(calcRate.value);
+            if (!calcRate.value || Number.isNaN(rate)) {
+                calcOut.textContent = 'Rellena "$ por 1.000 visitas" para estimar tu recompensa.';
+                return;
+            }
+            const views = Math.max(0, parseInt(calcVideo.value, 10) || 0);
+            const total = Math.max(0, parseInt(calcTotal.value, 10) || 0);
+            const cap = calcCap.value !== '' ? parseFloat(calcCap.value) : Infinity;
+            const min = calcMin.value !== '' ? parseInt(calcMin.value, 10) : 0;
+
+            let est = (views / 1000) * rate;
+            const capped = est > cap;
+            if (capped) est = cap;
+
+            const parts = [`Este vídeo: ~${est.toFixed(2)}$${capped ? ' (tope alcanzado)' : ''}`];
+            if (min > 0) {
+                parts.push(total >= min
+                    ? 'Perfil: mínimo cumplido ✓'
+                    : `Perfil: te faltan ${(min - total).toLocaleString('es')} visitas para el mínimo`);
+            }
+            calcOut.textContent = parts.join(' · ');
+        };
+        [calcRate, calcCap, calcMin, calcVideo, calcTotal].forEach(el => el.addEventListener('input', updateCalc));
+        updateCalc();
     }
 
     function setStatus(text, kind) {
@@ -947,6 +1197,7 @@
         const val = (id) => document.getElementById(id);
         const titleText = val('eff-title-text').value.trim();
         const watermarkText = val('eff-watermark-text').value.trim();
+        const badgeText = val('eff-badge').checked ? val('eff-badge-text').value.trim() : '';
         const audioSrc = val('eff-audio-src').value.trim();
         let audio = null;
         if (audioSrc) {
@@ -968,6 +1219,7 @@
             normalize_audio: val('eff-normalize').checked,
             title: titleText ? { text: titleText, position: val('eff-title-pos').value, duration: val('eff-title-dur').value } : null,
             watermark: watermarkText ? { text: watermarkText, position: val('eff-watermark-pos').value } : null,
+            badge: badgeText ? { text: badgeText } : null,
             audio,
         };
     }
@@ -1247,6 +1499,15 @@
     function onMerge() {
         if (state.segments.length === 0) return;
         const url = getCurrentUrl();
+        const output = readEffectsOutput();
+
+        // Aviso suave (no bloquea): recuerda revisar el checklist de la campaña
+        // actual antes de exportar sin título ni insignia, por si tu brief los exige.
+        if (!output.title && !output.badge) {
+            if (!confirm('Vas a exportar sin título ni insignia. Si tu campaña actual los exige, revisa el checklist antes de continuar.\n\n¿Continuar igualmente?')) {
+                return;
+            }
+        }
 
         const payload = {
             url,
@@ -1257,7 +1518,7 @@
                 transition: (s.transitionType && s.transitionType !== 'none')
                     ? { type: s.transitionType, duration: s.transitionDuration } : null,
             })),
-            output: readEffectsOutput(),
+            output,
         };
 
         log('Payload a enviar:', payload);
@@ -1390,30 +1651,96 @@
         return location.pathname;
     }
 
+    // Detección de cambio de vídeo:
+    // - En YouTube, su router SPA dispara "yt-navigate-finish" en `document`
+    //   justo cuando la navegación ha terminado y la URL ya está asentada en
+    //   el vídeo definitivo. Usar ese evento evita el problema de raíz: no
+    //   hay parpadeo que confundir porque no sondeamos la URL, actuamos solo
+    //   cuando YouTube confirma que terminó.
+    // - Ojo con la alternativa de "sondear y exigir N ticks seguidos para
+    //   confirmar": soluciona el parpadeo, pero abre una ventana (~N
+    //   segundos) en la que el panel sigue operando sobre el vídeo anterior.
+    //   Si el usuario marca inicio/fin del vídeo nuevo en esa ventana, esas
+    //   marcas se guardan en el array del vídeo viejo y se pierden en cuanto
+    //   se confirma el cambio. Por eso en YouTube no dependemos de eso.
+    // - En Twitch y otros sitios sin ese evento, mantenemos un sondeo, pero
+    //   solo como red de seguridad (también cubre navegaciones de YouTube
+    //   raras que no disparen el evento, como algunos saltos entre Shorts).
+    const AUTOSAVE_EVERY_N_TICKS = 5; // autoguardado de red de seguridad (≈5s)
+
     function observeNavigation() {
         let lastKey = getVideoKey();
+
+        function commitChange(newKey) {
+            if (!newKey || newKey === lastKey) return;
+            saveSegmentsFor(lastKey); // por si el usuario vuelve a este vídeo más tarde
+            log('Navegación confirmada:', newKey);
+            lastKey = newKey;
+
+            state.marking = null;
+            state.jobId = null;
+            state.editingIndex = null;
+            state.tlView = null;
+            if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
+
+            const restored = loadSegmentsFor(newKey);
+            state.segments = restored || [];
+
+            const result = document.getElementById('ytdl-result');
+            if (result) setHTML(result, '');
+            const btnStart = document.getElementById('ytdl-mark-start');
+            const btnEnd = document.getElementById('ytdl-mark-end');
+            if (btnStart) btnStart.disabled = false;
+            if (btnEnd) btnEnd.disabled = true;
+            setStatus(restored ? ('Recuperados ' + restored.length + ' trozo(s) de este vídeo') : 'Listo');
+            renderSegments();
+        }
+
+        if (location.hostname.includes('youtube.com')) {
+            document.addEventListener('yt-navigate-finish', () => commitChange(getVideoKey()));
+        }
+
+        // Sondeo de red de seguridad (Twitch, otros sitios, y casos raros en
+        // YouTube sin el evento). Como aquí SÍ podemos toparnos con un
+        // parpadeo intermedio, exigimos que la key nueva se repita seguida
+        // antes de darla por buena; en YouTube el evento de arriba ya habrá
+        // resuelto el cambio antes de que esto llegue a confirmar nada.
+        const POLL_CONFIRM_TICKS = 2;
+        let pendingKey = null;
+        let pendingCount = 0;
+        let autosaveTick = 0;
+
         setInterval(() => {
             const key = getVideoKey();
-            if (key !== lastKey) {
-                lastKey = key;
-                log('Navegación detectada:', key);
-                state.segments = [];
-                state.marking = null;
-                state.jobId = null;
-                state.editingIndex = null;
-                state.tlView = null;
-                if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
-                const result = document.getElementById('ytdl-result');
-                if (result) setHTML(result, '');
-                const btnStart = document.getElementById('ytdl-mark-start');
-                const btnEnd = document.getElementById('ytdl-mark-end');
-                if (btnStart) btnStart.disabled = false;
-                if (btnEnd) btnEnd.disabled = true;
-                setStatus('Listo');
-                renderSegments();
-            } else if (state.editingIndex !== null) {
-                updateTimelinePlayhead();
+
+            if (key === lastKey) {
+                pendingKey = null;
+                pendingCount = 0;
+                if (state.editingIndex !== null) {
+                    updateTimelinePlayhead();
+                } else {
+                    autosaveTick++;
+                    if (autosaveTick >= AUTOSAVE_EVERY_N_TICKS) {
+                        autosaveTick = 0;
+                        saveSegmentsFor(lastKey);
+                    }
+                }
+                return;
             }
+
+            if (key === pendingKey) {
+                pendingCount++;
+            } else {
+                pendingKey = key;
+                pendingCount = 1;
+            }
+            if (pendingCount < POLL_CONFIRM_TICKS) return;
+
+            const confirmedKey = pendingKey;
+            pendingKey = null;
+            pendingCount = 0;
+            autosaveTick = 0;
+            commitChange(confirmedKey);
         }, 1000);
     }
 
