@@ -23,6 +23,13 @@ Audio de fondo (opcional): payload["output"]["audio"] con
   { "path": "music.mp3", "mode": "mix"|"replace", "volume": 0..1,
     "original_volume": 0..1, "start": segundos, "loop": bool, "fade_out": s }
 "path" lo deja preparado el workflow (descarga de "url" o fichero de audio/).
+
+Insignia de texto (opcional, genérica — para cuando un brief pida marcar la
+fuente/cuenta en el vídeo): payload["output"]["badge"] = { "text": "..." }
+Se dibuja como una cajita roja pequeña abajo-izquierda ("▶ texto"), en TODOS
+los trozos (a diferencia de "title", que solo va en el primero). Es texto
+renderizado con drawtext, no una imagen real de ningún logo (evita tener que
+subir/mantener un asset .png en el runner de Actions).
 """
 import json
 import subprocess
@@ -106,7 +113,7 @@ def has_effects(payload: dict) -> bool:
         return True
     if out.get("normalize_audio"):
         return True
-    if out.get("title") or out.get("watermark"):
+    if out.get("title") or out.get("watermark") or out.get("badge"):
         return True
     for seg in payload.get("segments", []):
         if seg.get("zoom"):
@@ -117,7 +124,7 @@ def has_effects(payload: dict) -> bool:
     return False
 
 
-def build_segment_filter(aspect, canvas, zoom, watermark, title, fade_in, fade_out,
+def build_segment_filter(aspect, canvas, zoom, watermark, title, badge, fade_in, fade_out,
                           is_first, is_last, src_w, src_h, seg_dur):
     w, h = canvas if canvas else (src_w, src_h)
     steps = []
@@ -178,6 +185,17 @@ def build_segment_filter(aspect, canvas, zoom, watermark, title, fade_in, fade_o
         )
         cur = "[vwm]"
 
+    if badge and badge.get("text"):
+        # Insignia genérica (no atada a ninguna plataforma/marca): caja roja
+        # pequeña abajo-izquierda con ▶ + texto, para cuando un brief pida
+        # marcar la fuente sin depender de un asset de imagen que subir al runner.
+        steps.append(
+            f"{cur}drawtext=text='\u25b6 {esc_text(badge['text'])}':"
+            f"fontcolor=white:fontsize=20:x=20:y=h-text_h-20:"
+            f"box=1:boxcolor=red@0.85:boxborderw=6[vbadge]"
+        )
+        cur = "[vbadge]"
+
     if is_first and title and title.get("text"):
         y = y_expr(title.get("position", "bottom"))
         if title.get("duration") == "full":
@@ -230,7 +248,7 @@ def process_segment(src, dst, payload_output, seg_effects, is_first, is_last, co
 
     vfilter, w, h = build_segment_filter(
         aspect, canvas, seg_effects.get("zoom"),
-        payload_output.get("watermark"), payload_output.get("title"),
+        payload_output.get("watermark"), payload_output.get("title"), payload_output.get("badge"),
         float(payload_output.get("fade_in") or 0), float(payload_output.get("fade_out") or 0),
         is_first, is_last, src_w, src_h, seg_dur,
     )

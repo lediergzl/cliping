@@ -85,6 +85,7 @@ function sanitizeOutput(out: any) {
     normalize_audio: !!o.normalize_audio,
     title: null,
     watermark: null,
+    badge: null,
     audio: sanitizeAudio(o.audio),
   };
   if (o.title?.text && typeof o.title.text === "string") {
@@ -99,6 +100,9 @@ function sanitizeOutput(out: any) {
       text: o.watermark.text.slice(0, 40),
       position: ["top", "center", "bottom"].includes(o.watermark.position) ? o.watermark.position : "bottom",
     };
+  }
+  if (o.badge?.text && typeof o.badge.text === "string") {
+    result.badge = { text: o.badge.text.slice(0, 30) };
   }
   return result;
 }
