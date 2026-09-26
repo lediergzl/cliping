@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YTDL Clipper
 // @namespace    ytdl-clipper
-// @version      0.7.0
+// @version      0.9.0
 // @description  Marca trozos de un directo/VOD de YouTube o Twitch y los une en un clip
 // @match        https://www.youtube.com/*
 // @match        https://www.twitch.tv/*
@@ -13,18 +13,19 @@
 (function () {
     'use strict';
 
-    // ================== CONFIG ==================
+// ================== CONFIG ==================
     const CONFIG = {
-        WORKER_URL: 'https://ytdl-clipper-worker.TU-SUBDOMINIO.workers.dev', // ← pon tu URL real del Worker
-        CLIENT_TOKEN: 'PON-AQUI-UNA-CADENA-ALEATORIA-PROPIA',                // ← igual al secret CLIENT_TOKEN del Worker
+        WORKER_URL: 'https://ytdl-clipper-worker.yode86.workers.dev', // ← pon tu URL real del Worker
+        CLIENT_TOKEN: '1821519060a3dadc417f5a918f7b99c94b6278249194a900e204e980e90a6e7f',                // ← igual al secret CLIENT_TOKEN del Worker
         POLL_INTERVAL_MS: 5000,
         MOCK_MODE: false,  // v1 real: llama al Worker
     };
 
+
     // ================== ESTADO ==================
     const state = {
-        segments: [],   // [{ start, end }]
-        marking: null,  // null | { start }
+        segments: [],      // [{ start, end, ...efectos }]
+        marking: null,     // null | { start }
         jobId: null,
         pollTimer: null,
         editingIndex: null, // índice del trozo abierto para ajuste fino, o null
@@ -33,9 +34,9 @@
 
     // ================== ANCHO DEL PANEL ==================
     const PANEL_WIDTH_KEY = 'ytdl-clipper-panel-width';
-    const PANEL_WIDTH_MIN = 280;
+    const PANEL_WIDTH_MIN = 300;
     const PANEL_WIDTH_MAX = 900;
-    const PANEL_WIDTH_DEFAULT = 320;
+    const PANEL_WIDTH_DEFAULT = 340;
 
     function getSavedPanelWidth() {
         const raw = parseInt(localStorage.getItem(PANEL_WIDTH_KEY), 10);
@@ -90,7 +91,7 @@
         el.innerHTML = ttPolicy ? ttPolicy.createHTML(html) : html;
     }
 
-    // ================== UI ==================
+    // ================== PANEL: REDIMENSIONADO ==================
     function setupPanelResize(panel) {
         const handle = document.getElementById('ytdl-resize-handle');
         if (!handle) return;
@@ -108,8 +109,7 @@
 
         window.addEventListener('mousemove', (e) => {
             if (!dragging) return;
-            // El panel está anclado a la derecha (right: 20px), así que
-            // arrastrar hacia la izquierda (deltaX negativo) debe ensancharlo.
+            // El panel está anclado a la derecha, así que arrastrar a la izquierda lo ensancha.
             const deltaX = e.clientX - startX;
             const newWidth = Math.min(
                 Math.min(PANEL_WIDTH_MAX, window.innerWidth - 40),
@@ -134,6 +134,7 @@
         });
     }
 
+    // ================== PANEL: MARCUP ==================
     function injectPanel() {
         if (document.getElementById('ytdl-clipper-panel')) return;
 
@@ -141,95 +142,154 @@
         panel.id = 'ytdl-clipper-panel';
         setHTML(panel, `
             <div class="ytdl-resize-handle" id="ytdl-resize-handle" title="Arrastra para ensanchar"></div>
-            <div class="ytdl-header">
-                <span>🎬 YTDL Clipper</span>
-                <button class="ytdl-toggle" title="Ocultar">—</button>
-            </div>
+
+            <header class="ytdl-header">
+                <div class="ytdl-brand">
+                    <span class="ytdl-brand-name">YTDL Clipper</span>
+                    <span class="ytdl-brand-sub">Editor de clips</span>
+                </div>
+                <button class="ytdl-icon-btn ytdl-toggle" title="Ocultar panel" aria-label="Ocultar panel">−</button>
+            </header>
+
             <div class="ytdl-body">
-                <div class="ytdl-status" id="ytdl-status">Listo</div>
-                <div class="ytdl-mark-area">
-                    <button id="ytdl-mark-start" class="ytdl-btn ytdl-btn-primary">▶ Iniciar trozo</button>
-                    <button id="ytdl-mark-end" class="ytdl-btn ytdl-btn-danger" disabled>■ Cerrar trozo</button>
-                </div>
-                <details class="ytdl-effects">
-                    <summary>⚙ Efectos (opcional)</summary>
-                    <div class="ytdl-effects-body">
-                        <div class="ytdl-eff-row">
-                            <label>Aspecto</label>
-                            <select id="eff-aspect">
-                                <option value="original">Original</option>
-                                <option value="16:9">16:9</option>
-                                <option value="9:16">9:16 (vertical)</option>
-                                <option value="1:1">1:1</option>
-                            </select>
-                        </div>
-                        <div class="ytdl-eff-row">
-                            <label><input type="checkbox" id="eff-fadein"> Fade in</label>
-                            <input type="number" id="eff-fadein-s" min="0" max="5" step="0.5" value="1">s
-                        </div>
-                        <div class="ytdl-eff-row">
-                            <label><input type="checkbox" id="eff-fadeout"> Fade out</label>
-                            <input type="number" id="eff-fadeout-s" min="0" max="5" step="0.5" value="1">s
-                        </div>
-                        <div class="ytdl-eff-row">
-                            <label><input type="checkbox" id="eff-normalize"> Normalizar volumen</label>
-                        </div>
-                        <div class="ytdl-eff-row">
-                            <input type="text" id="eff-title-text" placeholder="Título (opcional)">
-                        </div>
-                        <div class="ytdl-eff-row">
-                            <select id="eff-title-pos">
-                                <option value="top">Arriba</option>
-                                <option value="center">Centro</option>
-                                <option value="bottom" selected>Abajo</option>
-                            </select>
-                            <select id="eff-title-dur">
-                                <option value="start" selected>Solo inicio (5s)</option>
-                                <option value="full">Primer trozo entero</option>
-                            </select>
-                        </div>
-                        <div class="ytdl-eff-row">
-                            <input type="text" id="eff-watermark-text" placeholder="Marca de agua (opcional)">
-                        </div>
-                        <div class="ytdl-eff-row">
-                            <select id="eff-watermark-pos">
-                                <option value="top">Arriba</option>
-                                <option value="center">Centro</option>
-                                <option value="bottom" selected>Abajo</option>
-                            </select>
-                        </div>
-                        <div class="ytdl-eff-sep">🎵 Música de fondo</div>
-                        <div class="ytdl-eff-row">
-                            <input type="text" id="eff-audio-src" placeholder="URL (YouTube, mp3...) o archivo de audio/">
-                        </div>
-                        <div class="ytdl-eff-row">
-                            <select id="eff-audio-mode">
-                                <option value="mix" selected>Mezclar con el original</option>
-                                <option value="replace">Reemplazar el original</option>
-                            </select>
-                        </div>
-                        <div class="ytdl-eff-row">
-                            <label>Música</label>
-                            <input type="range" id="eff-audio-vol" min="0" max="100" value="50">
-                            <span id="eff-audio-vol-v" class="ytdl-eff-val">50%</span>
-                        </div>
-                        <div class="ytdl-eff-row">
-                            <label>Original</label>
-                            <input type="range" id="eff-audio-orig" min="0" max="100" value="100">
-                            <span id="eff-audio-orig-v" class="ytdl-eff-val">100%</span>
-                        </div>
-                        <div class="ytdl-eff-row">
-                            <label>Empezar en</label>
-                            <input type="number" id="eff-audio-start" min="0" step="1" value="0" style="width:52px">s
-                            <label><input type="checkbox" id="eff-audio-loop" checked> Repetir</label>
-                        </div>
+
+                <section class="ytdl-section">
+                    <div class="ytdl-section-head">
+                        <h3 class="ytdl-section-title">Marcar</h3>
+                        <div class="ytdl-status" id="ytdl-status"><span class="ytdl-dot"></span><span id="ytdl-status-text">Listo</span></div>
                     </div>
-                </details>
-                <div class="ytdl-segments" id="ytdl-segments"></div>
-                <div class="ytdl-actions">
-                    <button id="ytdl-merge" class="ytdl-btn ytdl-btn-merge" disabled>Unir y descargar</button>
-                </div>
-                <div class="ytdl-result" id="ytdl-result"></div>
+                    <div class="ytdl-mark-area">
+                        <button id="ytdl-mark-start" class="ytdl-btn ytdl-btn-primary">Iniciar trozo</button>
+                        <button id="ytdl-mark-end" class="ytdl-btn ytdl-btn-secondary" disabled>Cerrar trozo</button>
+                    </div>
+                </section>
+
+                <section class="ytdl-section">
+                    <div class="ytdl-section-head">
+                        <h3 class="ytdl-section-title">Trozos</h3>
+                        <span class="ytdl-count" id="ytdl-count">0 trozos · 0:00</span>
+                    </div>
+                    <div class="ytdl-segments" id="ytdl-segments"></div>
+                </section>
+
+                <section class="ytdl-section">
+                    <details class="ytdl-effects">
+                        <summary class="ytdl-section-head ytdl-summary">
+                            <h3 class="ytdl-section-title">Efectos</h3>
+                            <span class="ytdl-chevron">▾</span>
+                        </summary>
+
+                        <div class="ytdl-group">
+                            <div class="ytdl-group-title">Imagen</div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-aspect">Formato</label>
+                                <select id="eff-aspect" class="ytdl-input">
+                                    <option value="original">Original</option>
+                                    <option value="16:9">16:9</option>
+                                    <option value="9:16">9:16 (vertical)</option>
+                                    <option value="1:1">1:1</option>
+                                </select>
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label"><input type="checkbox" id="eff-fadein"> Fade in</label>
+                                <span class="ytdl-inline">
+                                    <input type="number" id="eff-fadein-s" class="ytdl-input ytdl-input-num" min="0" max="5" step="0.5" value="1"> s
+                                </span>
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label"><input type="checkbox" id="eff-fadeout"> Fade out</label>
+                                <span class="ytdl-inline">
+                                    <input type="number" id="eff-fadeout-s" class="ytdl-input ytdl-input-num" min="0" max="5" step="0.5" value="1"> s
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="ytdl-group">
+                            <div class="ytdl-group-title">Texto</div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-title-text">Título</label>
+                                <input type="text" id="eff-title-text" class="ytdl-input" placeholder="Opcional">
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label">Posición</label>
+                                <span class="ytdl-inline ytdl-inline-grow">
+                                    <select id="eff-title-pos" class="ytdl-input">
+                                        <option value="top">Arriba</option>
+                                        <option value="center">Centro</option>
+                                        <option value="bottom" selected>Abajo</option>
+                                    </select>
+                                    <select id="eff-title-dur" class="ytdl-input">
+                                        <option value="start" selected>Solo 5s</option>
+                                        <option value="full">Primer trozo</option>
+                                    </select>
+                                </span>
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-watermark-text">Marca de agua</label>
+                                <input type="text" id="eff-watermark-text" class="ytdl-input" placeholder="Opcional">
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label">Posición</label>
+                                <select id="eff-watermark-pos" class="ytdl-input">
+                                    <option value="top">Arriba</option>
+                                    <option value="center">Centro</option>
+                                    <option value="bottom" selected>Abajo</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="ytdl-group">
+                            <div class="ytdl-group-title">Audio</div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-normalize"><input type="checkbox" id="eff-normalize"> Normalizar volumen</label>
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-audio-src">Música</label>
+                                <input type="text" id="eff-audio-src" class="ytdl-input" placeholder="URL o archivo de audio/">
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label">Modo</label>
+                                <select id="eff-audio-mode" class="ytdl-input">
+                                    <option value="mix" selected>Mezclar con el original</option>
+                                    <option value="replace">Reemplazar el original</option>
+                                </select>
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label">Volumen música</label>
+                                <span class="ytdl-inline ytdl-inline-grow">
+                                    <input type="range" id="eff-audio-vol" min="0" max="100" value="50">
+                                    <span id="eff-audio-vol-v" class="ytdl-value">50%</span>
+                                </span>
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label">Volumen original</label>
+                                <span class="ytdl-inline ytdl-inline-grow">
+                                    <input type="range" id="eff-audio-orig" min="0" max="100" value="100">
+                                    <span id="eff-audio-orig-v" class="ytdl-value">100%</span>
+                                </span>
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label">Empezar en</label>
+                                <span class="ytdl-inline">
+                                    <input type="number" id="eff-audio-start" class="ytdl-input ytdl-input-num" min="0" step="1" value="0"> s
+                                    <label class="ytdl-check"><input type="checkbox" id="eff-audio-loop" checked> Repetir</label>
+                                </span>
+                            </div>
+                        </div>
+                    </details>
+                </section>
+
+                <section class="ytdl-section ytdl-section-export">
+                    <div class="ytdl-section-head">
+                        <h3 class="ytdl-section-title">Exportar</h3>
+                    </div>
+                    <div class="ytdl-export-row">
+                        <button id="ytdl-preview-btn" class="ytdl-btn ytdl-btn-secondary" disabled>Vista previa</button>
+                        <button id="ytdl-merge" class="ytdl-btn ytdl-btn-primary" disabled>Unir y descargar</button>
+                    </div>
+                    <div class="ytdl-result" id="ytdl-result"></div>
+                </section>
+
             </div>
         `);
         document.body.appendChild(panel);
@@ -237,170 +297,292 @@
         const style = document.createElement('style');
         style.textContent = `
             #ytdl-clipper-panel {
+                --ytdl-bg: #ffffff;
+                --ytdl-surface: #f6f6f8;
+                --ytdl-border: #e3e3e8;
+                --ytdl-text: #18181b;
+                --ytdl-muted: #6b6b76;
+                --ytdl-accent: #7c3aed;
+                --ytdl-accent-hover: #6d28d9;
+                --ytdl-danger: #dc2626;
+                --ytdl-success: #16a34a;
+                --ytdl-radius: 8px;
+
                 position: fixed; top: 80px; right: 20px;
                 width: ${getSavedPanelWidth()}px; z-index: 99999;
-                background: #ffffff; color: #1f1f23;
-                border: 1px solid #d9d9de; border-radius: 8px;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,0.15);
-                user-select: none;
                 max-width: 95vw;
+                background: var(--ytdl-bg); color: var(--ytdl-text);
+                border: 1px solid var(--ytdl-border); border-radius: 12px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                font-size: 13px; line-height: 1.4;
+                box-shadow: 0 12px 32px rgba(0,0,0,0.12);
+                user-select: none;
             }
             #ytdl-clipper-panel.ytdl-collapsed .ytdl-body { display: none; }
             #ytdl-clipper-panel.ytdl-resizing { user-select: none; transition: none; }
+            #ytdl-clipper-panel * { box-sizing: border-box; }
             #ytdl-clipper-panel iframe { pointer-events: none; }
+
             .ytdl-resize-handle {
                 position: absolute; top: 0; left: -4px; bottom: 0; width: 8px;
-                cursor: ew-resize; z-index: 2;
+                cursor: ew-resize; z-index: 2; border-radius: 12px 0 0 12px;
             }
             .ytdl-resize-handle:hover, #ytdl-clipper-panel.ytdl-resizing .ytdl-resize-handle {
-                background: rgba(145, 71, 255, 0.35);
+                background: rgba(124, 58, 237, 0.25);
             }
+
+            /* ---- Cabecera ---- */
             .ytdl-header {
                 display: flex; justify-content: space-between; align-items: center;
-                padding: 8px 12px; background: #f4f4f6; color: #1f1f23;
-                border-bottom: 1px solid #d9d9de; border-radius: 8px 8px 0 0;
-                font-weight: 600;
+                padding: 12px 14px; border-bottom: 1px solid var(--ytdl-border);
+                border-radius: 12px 12px 0 0; background: var(--ytdl-bg);
             }
-            .ytdl-toggle {
-                background: transparent; border: none; color: #6b6b74;
-                cursor: pointer; font-size: 16px; padding: 0 4px;
+            .ytdl-brand { display: flex; flex-direction: column; }
+            .ytdl-brand-name { font-weight: 700; font-size: 14px; }
+            .ytdl-brand-sub { font-size: 11px; color: var(--ytdl-muted); }
+            .ytdl-icon-btn {
+                width: 28px; height: 28px; border: 1px solid var(--ytdl-border);
+                background: var(--ytdl-bg); color: var(--ytdl-muted);
+                border-radius: 6px; cursor: pointer; font-size: 16px; line-height: 1;
+                display: flex; align-items: center; justify-content: center;
             }
-            .ytdl-toggle:hover { color: #1f1f23; }
-            .ytdl-body { padding: 10px 12px; }
+            .ytdl-icon-btn:hover { color: var(--ytdl-text); background: var(--ytdl-surface); }
+
+            /* ---- Cuerpo y secciones ---- */
+            .ytdl-body { padding: 4px 14px 14px; }
+            .ytdl-section { padding: 12px 0; border-bottom: 1px solid var(--ytdl-border); }
+            .ytdl-section:last-child { border-bottom: none; }
+            .ytdl-section-head {
+                display: flex; justify-content: space-between; align-items: center;
+                gap: 8px; margin-bottom: 8px;
+            }
+            .ytdl-section-title {
+                margin: 0; font-size: 11px; font-weight: 700;
+                text-transform: uppercase; letter-spacing: 0.06em; color: var(--ytdl-muted);
+            }
+
+            /* ---- Estado ---- */
             .ytdl-status {
-                font-size: 11px; color: #6b6b74; margin-bottom: 8px;
-                padding: 4px 6px; background: #f4f4f6; border-radius: 4px;
-                text-align: center;
+                display: inline-flex; align-items: center; gap: 6px;
+                font-size: 11px; color: var(--ytdl-muted);
             }
-            .ytdl-mark-area { display: flex; gap: 6px; margin-bottom: 10px; }
-            .ytdl-effects {
-                margin-bottom: 10px; background: #f4f4f6; border-radius: 4px; padding: 4px 6px;
+            .ytdl-dot {
+                width: 7px; height: 7px; border-radius: 50%;
+                background: var(--ytdl-success);
             }
-            .ytdl-effects summary {
-                cursor: pointer; padding: 4px 2px; font-size: 12px; color: #6b6b74; outline: none;
+            .ytdl-status.ytdl-status-recording .ytdl-dot {
+                background: var(--ytdl-danger);
+                animation: ytdl-pulse 1.2s infinite;
             }
-            .ytdl-effects summary:hover { color: #1f1f23; }
-            .ytdl-effects-body { padding: 6px 2px 2px; }
-            .ytdl-eff-row {
-                display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 11px;
-            }
-            .ytdl-eff-row:last-child { margin-bottom: 0; }
-            .ytdl-eff-row select, .ytdl-eff-row input[type="text"] {
-                flex: 1; background: #ffffff; color: #1f1f23; border: 1px solid #c8c8cf;
-                border-radius: 3px; padding: 4px 6px; font-size: 11px; min-width: 0;
-            }
-            .ytdl-eff-row input[type="number"] {
-                width: 42px; background: #ffffff; color: #1f1f23; border: 1px solid #c8c8cf;
-                border-radius: 3px; padding: 4px; font-size: 11px;
-            }
-            .ytdl-eff-row label { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+            .ytdl-status.ytdl-status-error { color: var(--ytdl-danger); }
+            .ytdl-status.ytdl-status-error .ytdl-dot { background: var(--ytdl-danger); }
+            @keyframes ytdl-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+            /* ---- Botones ---- */
+            .ytdl-mark-area { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
             .ytdl-btn {
-                flex: 1; padding: 8px 10px; border: none; border-radius: 4px;
+                padding: 8px 10px; border: 1px solid transparent; border-radius: 6px;
                 cursor: pointer; font-size: 12px; font-weight: 600;
-                transition: opacity 0.15s;
+                transition: background 0.15s, opacity 0.15s;
             }
-            .ytdl-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-            .ytdl-btn:not(:disabled):hover { opacity: 0.85; }
-            .ytdl-btn-primary { background: #9147ff; color: #fff; }
-            .ytdl-btn-danger { background: #eb0400; color: #fff; }
-            .ytdl-btn-merge { background: #00b84c; color: #fff; width: 100%; }
+            .ytdl-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+            .ytdl-btn-block { width: 100%; }
+            .ytdl-btn-primary { background: var(--ytdl-accent); color: #fff; }
+            .ytdl-btn-primary:not(:disabled):hover { background: var(--ytdl-accent-hover); }
+            .ytdl-btn-secondary {
+                background: var(--ytdl-bg); color: var(--ytdl-text); border-color: var(--ytdl-border);
+            }
+            .ytdl-btn-secondary:not(:disabled):hover { background: var(--ytdl-surface); }
+            #ytdl-mark-end:not(:disabled) { color: var(--ytdl-danger); border-color: var(--ytdl-danger); }
+
+            /* ---- Contador de trozos ---- */
+            .ytdl-count { font-size: 11px; color: var(--ytdl-muted); font-variant-numeric: tabular-nums; }
+
+            /* ---- Lista de trozos ---- */
             .ytdl-segments {
-                max-height: 320px; overflow-y: auto; margin-bottom: 10px;
-                background: #f4f4f6; border-radius: 4px; padding: 6px;
+                max-height: 340px; overflow-y: auto;
+                display: flex; flex-direction: column; gap: 6px;
             }
-            .ytdl-empty { color: #8a8a94; text-align: center; padding: 12px 0; font-size: 12px; }
+            .ytdl-empty {
+                color: var(--ytdl-muted); text-align: center; padding: 18px 0;
+                font-size: 12px; background: var(--ytdl-surface); border-radius: var(--ytdl-radius);
+            }
             .ytdl-segment {
-                padding: 5px 6px; margin-bottom: 4px;
-                background: #ffffff; border: 1px solid #e2e2e8; border-radius: 4px; font-size: 12px;
+                padding: 8px 10px; background: var(--ytdl-bg);
+                border: 1px solid var(--ytdl-border); border-radius: var(--ytdl-radius);
             }
-            .ytdl-segment:last-child { margin-bottom: 0; }
-            .ytdl-segment-row { display: flex; align-items: center; justify-content: space-between; }
-            .ytdl-segment-time { color: #1f1f23; font-family: monospace; }
-            .ytdl-segment-dur { color: #8a8a94; }
-            .ytdl-segment-actions { display: flex; gap: 4px; }
+            .ytdl-segment.ytdl-segment-active { border-color: var(--ytdl-accent); }
+            .ytdl-segment-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+            .ytdl-segment-info { display: flex; flex-direction: column; min-width: 0; }
+            .ytdl-segment-num { font-size: 11px; color: var(--ytdl-muted); }
+            .ytdl-segment-time {
+                font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+                font-variant-numeric: tabular-nums; white-space: nowrap;
+            }
+            .ytdl-segment-dur { color: var(--ytdl-muted); }
+            .ytdl-segment-actions { display: flex; gap: 2px; flex-shrink: 0; }
             .ytdl-segment-btn {
-                background: transparent; border: none; color: #6b6b74;
-                cursor: pointer; font-size: 14px; padding: 0 4px;
+                width: 26px; height: 26px; border: none; border-radius: 6px;
+                background: transparent; color: var(--ytdl-muted);
+                cursor: pointer; font-size: 13px; display: flex; align-items: center; justify-content: center;
             }
-            .ytdl-segment-btn:hover { color: #9147ff; }
-            .ytdl-segment-btn.ytdl-active { color: #9147ff; font-weight: 700; }
+            .ytdl-segment-btn:hover { background: var(--ytdl-surface); color: var(--ytdl-text); }
+            .ytdl-segment-btn.ytdl-active { background: rgba(124, 58, 237, 0.12); color: var(--ytdl-accent); }
+            .ytdl-segment-btn.ytdl-btn-del:hover { color: var(--ytdl-danger); }
 
             /* ---- Editor de trozo ---- */
             .ytdl-segment-edit {
-                margin-top: 6px; padding: 6px; background: #f8f8fa;
-                border-radius: 4px; font-size: 11px;
+                margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--ytdl-border);
+                display: flex; flex-direction: column; gap: 8px;
             }
-            .ytdl-edit-row {
-                display: flex; align-items: center; gap: 4px; margin-bottom: 4px; flex-wrap: wrap;
+            .ytdl-edit-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+            .ytdl-edit-label { width: 64px; font-size: 11px; color: var(--ytdl-muted); }
+            .ytdl-edit-time {
+                font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
+                width: 56px; font-variant-numeric: tabular-nums;
             }
-            .ytdl-edit-row:last-child { margin-bottom: 0; }
-            .ytdl-edit-label { width: 34px; color: #6b6b74; }
-            .ytdl-edit-time { font-family: monospace; width: 62px; color: #1f1f23; }
             .ytdl-nudge-btn {
-                background: #e5e5ea; border: none; color: #1f1f23;
-                border-radius: 3px; cursor: pointer; font-size: 10px;
-                padding: 3px 6px; font-family: monospace;
+                background: var(--ytdl-surface); border: 1px solid var(--ytdl-border);
+                color: var(--ytdl-text); border-radius: 5px; cursor: pointer;
+                font-size: 10px; padding: 3px 6px; font-family: ui-monospace, Menlo, monospace;
             }
-            .ytdl-nudge-btn:hover { background: #d4d4dc; }
+            .ytdl-nudge-btn:hover { border-color: var(--ytdl-accent); color: var(--ytdl-accent); }
             .ytdl-edit-seek {
-                background: #9147ff; border: none; color: #fff;
-                border-radius: 3px; cursor: pointer; font-size: 10px;
-                padding: 3px 6px; margin-left: auto;
+                background: var(--ytdl-accent); border: none; color: #fff;
+                border-radius: 5px; cursor: pointer; font-size: 10px; padding: 3px 8px;
+                margin-left: auto;
             }
-            .ytdl-edit-seek:hover { opacity: 0.85; }
+            .ytdl-edit-seek:hover { background: var(--ytdl-accent-hover); }
+            .ytdl-edit-fx { border-top: 1px dashed var(--ytdl-border); padding-top: 8px; }
 
             /* ---- Timeline arrastrable ---- */
-            .ytdl-tl-wrap { margin: 4px 0 8px; }
             .ytdl-tl-track {
-                position: relative; height: 34px; background: #e4e4e9;
-                border-radius: 6px; cursor: pointer; touch-action: none;
+                position: relative; height: 34px; background: var(--ytdl-surface);
+                border: 1px solid var(--ytdl-border); border-radius: 6px;
+                cursor: pointer; touch-action: none;
             }
             .ytdl-tl-range {
-                position: absolute; top: 0; bottom: 0; background: #9147ff;
-                border-radius: 6px; opacity: 0.85; pointer-events: none;
+                position: absolute; top: 0; bottom: 0; background: var(--ytdl-accent);
+                opacity: 0.85; pointer-events: none;
             }
             .ytdl-tl-handle {
-                position: absolute; top: -4px; bottom: -4px; width: 14px;
-                margin-left: -7px; background: #ffffff;
-                border: 2px solid #6d2fd6; border-radius: 4px;
+                position: absolute; top: -4px; bottom: -4px; width: 12px;
+                margin-left: -6px; background: #fff;
+                border: 2px solid var(--ytdl-accent-hover); border-radius: 4px;
                 cursor: ew-resize; box-sizing: border-box; z-index: 2;
             }
             .ytdl-tl-handle::after {
                 content: ''; position: absolute; top: 50%; left: 50%;
                 width: 2px; height: 10px; margin: -5px 0 0 -1px;
-                background: #6d2fd6; border-radius: 1px;
+                background: var(--ytdl-accent-hover); border-radius: 1px;
             }
             .ytdl-tl-playhead {
                 position: absolute; top: 0; bottom: 0; width: 2px;
-                margin-left: -1px; background: #eb0400; pointer-events: none; z-index: 1;
+                margin-left: -1px; background: var(--ytdl-danger); pointer-events: none; z-index: 1;
             }
             .ytdl-tl-labels {
-                display: flex; justify-content: space-between;
-                font-family: monospace; font-size: 10px; color: #6b6b74; margin-top: 3px;
+                display: flex; justify-content: space-between; align-items: center;
+                font-family: ui-monospace, Menlo, monospace; font-size: 10px;
+                color: var(--ytdl-muted); margin-top: 4px;
             }
-            .ytdl-tl-hint { font-size: 10px; color: #8a8a94; margin-top: 2px; }
+            .ytdl-tl-hint { font-size: 10px; color: var(--ytdl-muted); margin-top: 4px; }
 
-            .ytdl-edit-sep { border-top: 1px solid #e2e2e8; padding-top: 6px; margin-top: 4px; }
-            .ytdl-eff-input { background: #ffffff; color: #1f1f23; border: 1px solid #c8c8cf; border-radius: 3px; font-size: 11px; }
-            .ytdl-eff-input[type="number"] { width: 44px; padding: 2px; }
-            .ytdl-eff-input[type="checkbox"] { width: auto; }
+            /* ---- Efectos ---- */
+            .ytdl-effects summary { list-style: none; cursor: pointer; }
+            .ytdl-effects summary::-webkit-details-marker { display: none; }
+            .ytdl-summary { margin-bottom: 0; }
+            .ytdl-chevron { color: var(--ytdl-muted); transition: transform 0.15s; }
+            .ytdl-effects[open] .ytdl-chevron { transform: rotate(180deg); }
+            .ytdl-effects[open] .ytdl-summary { margin-bottom: 10px; }
+            .ytdl-group {
+                background: var(--ytdl-surface); border-radius: var(--ytdl-radius);
+                padding: 8px 10px; margin-bottom: 8px;
+            }
+            .ytdl-group-title {
+                font-size: 11px; font-weight: 600; color: var(--ytdl-text); margin-bottom: 6px;
+            }
+            .ytdl-field {
+                display: flex; align-items: center; justify-content: space-between;
+                gap: 8px; margin-bottom: 6px; min-height: 26px;
+            }
+            .ytdl-field:last-child { margin-bottom: 0; }
+            .ytdl-label {
+                display: flex; align-items: center; gap: 6px;
+                font-size: 12px; color: var(--ytdl-muted); white-space: nowrap;
+            }
+            .ytdl-check { display: inline-flex; align-items: center; gap: 4px; color: var(--ytdl-muted); }
+            .ytdl-inline { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ytdl-muted); }
+            .ytdl-inline-grow { flex: 1; justify-content: flex-end; min-width: 0; }
+            .ytdl-input {
+                background: var(--ytdl-bg); color: var(--ytdl-text);
+                border: 1px solid var(--ytdl-border); border-radius: 6px;
+                padding: 4px 8px; font-size: 12px; min-width: 0;
+                font-family: inherit;
+            }
+            .ytdl-input:focus { outline: none; border-color: var(--ytdl-accent); }
+            .ytdl-field > .ytdl-input, .ytdl-field > input[type="text"], .ytdl-field > select { flex: 1; }
+            .ytdl-input-num { width: 52px; }
+            .ytdl-inline-grow .ytdl-input { flex: 1; }
+            .ytdl-field input[type="range"] { flex: 1; min-width: 0; accent-color: var(--ytdl-accent); }
+            .ytdl-value {
+                width: 40px; text-align: right; font-family: ui-monospace, Menlo, monospace;
+                font-size: 11px; color: var(--ytdl-text);
+            }
 
-            .ytdl-eff-sep { margin-top: 8px; padding-top: 6px; border-top: 1px solid #d9d9de; font-weight: 600; color: #6b6b74; }
-            .ytdl-eff-row input[type="range"] { flex: 1; min-width: 0; }
-            .ytdl-eff-val { width: 34px; text-align: right; font-family: monospace; }
+            .ytdl-export-row { display: grid; grid-template-columns: 1fr 1.4fr; gap: 8px; }
 
-            .ytdl-result { margin-top: 8px; font-size: 12px; }
-            .ytdl-result a { color: #9147ff; text-decoration: none; font-weight: 600; }
+            /* ---- Visor de vista previa (fuera del panel) ---- */
+            #ytdl-pv-overlay {
+                position: fixed; inset: 0; z-index: 100000;
+                background: rgba(0, 0, 0, 0.6);
+                display: flex; align-items: center; justify-content: center;
+                padding: 20px; user-select: none;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            }
+            .ytdl-pv-box {
+                background: #ffffff; color: #18181b; border-radius: 12px;
+                width: min(760px, 100%); padding: 14px;
+                box-shadow: 0 20px 48px rgba(0,0,0,0.35);
+            }
+            .ytdl-pv-head {
+                display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;
+            }
+            .ytdl-pv-title { font-weight: 700; font-size: 14px; }
+            .ytdl-pv-stage {
+                background: #000; border-radius: 8px; display: flex;
+                justify-content: center; align-items: center; padding: 6px;
+            }
+            .ytdl-pv-stage canvas { display: block; max-width: 100%; max-height: 60vh; }
+            .ytdl-pv-controls { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+            .ytdl-pv-controls .ytdl-btn { flex-shrink: 0; min-width: 96px; }
+            .ytdl-pv-progress {
+                flex: 1; height: 6px; background: #e3e3e8; border-radius: 3px;
+                cursor: pointer; position: relative;
+            }
+            .ytdl-pv-bar { height: 100%; width: 0; background: #7c3aed; border-radius: 3px; }
+            .ytdl-pv-time {
+                font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+                color: #6b6b76; white-space: nowrap; font-variant-numeric: tabular-nums;
+            }
+            .ytdl-pv-note { margin-top: 8px; font-size: 11px; color: #6b6b76; }
+
+            /* ---- Resultado ---- */
+            .ytdl-result { margin-top: 10px; font-size: 12px; }
+            .ytdl-result:empty { display: none; }
+            .ytdl-result a { color: var(--ytdl-accent); text-decoration: none; font-weight: 600; }
             .ytdl-result a:hover { text-decoration: underline; }
-            .ytdl-video { width: 100%; max-height: 220px; background: #000; border-radius: 4px; margin-bottom: 6px; }
-            .ytdl-result-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
-            .ytdl-mini-btn {
-                background: #e5e5ea; border: none; color: #1f1f23; border-radius: 3px;
-                cursor: pointer; font-size: 11px; padding: 4px 8px;
+            .ytdl-video {
+                width: 100%; max-height: 220px; background: #000;
+                border-radius: var(--ytdl-radius); margin-bottom: 8px;
             }
-            .ytdl-mini-btn:hover { background: #d4d4dc; }
-            .ytdl-hint { margin-top: 6px; color: #6b6b74; font-size: 11px; }
+            .ytdl-result-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+            .ytdl-mini-btn {
+                background: var(--ytdl-surface); border: 1px solid var(--ytdl-border);
+                color: var(--ytdl-text); border-radius: 6px; cursor: pointer;
+                font-size: 11px; padding: 4px 8px;
+            }
+            .ytdl-mini-btn:hover { border-color: var(--ytdl-accent); }
+            .ytdl-hint { margin-top: 6px; color: var(--ytdl-muted); font-size: 11px; }
         `;
         document.head.appendChild(style);
 
@@ -411,6 +593,7 @@
         document.getElementById('ytdl-mark-start').onclick = onMarkStart;
         document.getElementById('ytdl-mark-end').onclick = onMarkEnd;
         document.getElementById('ytdl-merge').onclick = onMerge;
+        document.getElementById('ytdl-preview-btn').onclick = openPreview;
         [['eff-audio-vol', 'eff-audio-vol-v'], ['eff-audio-orig', 'eff-audio-orig-v']].forEach(([inp, out]) => {
             const el = document.getElementById(inp);
             el.addEventListener('input', () => { document.getElementById(out).textContent = el.value + '%'; });
@@ -419,9 +602,14 @@
         renderSegments();
     }
 
-    function setStatus(text) {
-        const el = document.getElementById('ytdl-status');
-        if (el) el.textContent = text;
+    function setStatus(text, kind) {
+        const box = document.getElementById('ytdl-status');
+        const txt = document.getElementById('ytdl-status-text');
+        if (txt) txt.textContent = text;
+        if (box) {
+            box.classList.toggle('ytdl-status-recording', kind === 'recording');
+            box.classList.toggle('ytdl-status-error', kind === 'error');
+        }
     }
 
     // ================== RENDER ==================
@@ -434,33 +622,46 @@
         return { a, b: Math.max(b, a + 1) };
     }
 
+    function updateSummary() {
+        const el = document.getElementById('ytdl-count');
+        if (!el) return;
+        const total = state.segments.reduce((acc, s) => acc + (s.end - s.start), 0);
+        const n = state.segments.length;
+        el.textContent = n + (n === 1 ? ' trozo' : ' trozos') + ' · ' + formatTime(total);
+    }
+
     function renderSegments() {
         const container = document.getElementById('ytdl-segments');
         if (!container) return;
 
+        updateSummary();
+
         if (state.segments.length === 0) {
-            setHTML(container, '<div class="ytdl-empty">Sin trozos marcados</div>');
+            setHTML(container, '<div class="ytdl-empty">Marca un inicio y un cierre para añadir trozos</div>');
         } else {
             setHTML(container, state.segments.map((seg, i) => {
                 const editing = state.editingIndex === i;
                 if (editing) state.tlView = computeTimelineView(seg);
                 return `
-                <div class="ytdl-segment" data-index="${i}">
+                <div class="ytdl-segment ${editing ? 'ytdl-segment-active' : ''}" data-index="${i}">
                     <div class="ytdl-segment-row">
-                        <span class="ytdl-segment-time">
-                            ${i + 1}. ${formatTime(seg.start)} → ${formatTime(seg.end)}
-                            <span class="ytdl-segment-dur">(${formatTime(seg.end - seg.start)})</span>
-                        </span>
-                        <span class="ytdl-segment-actions">
+                        <div class="ytdl-segment-info">
+                            <span class="ytdl-segment-num">Trozo ${i + 1}</span>
+                            <span class="ytdl-segment-time">
+                                ${formatTime(seg.start)} → ${formatTime(seg.end)}
+                                <span class="ytdl-segment-dur">· ${formatTime(seg.end - seg.start)}</span>
+                            </span>
+                        </div>
+                        <div class="ytdl-segment-actions">
                             <button class="ytdl-segment-btn ${editing ? 'ytdl-active' : ''}" data-action="edit" title="Ajustar recorte">✎</button>
-                            <button class="ytdl-segment-btn" data-action="up" title="Subir">↑</button>
-                            <button class="ytdl-segment-btn" data-action="down" title="Bajar">↓</button>
-                            <button class="ytdl-segment-btn" data-action="delete" title="Borrar">✕</button>
-                        </span>
+                            <button class="ytdl-segment-btn" data-action="up" title="Mover arriba">↑</button>
+                            <button class="ytdl-segment-btn" data-action="down" title="Mover abajo">↓</button>
+                            <button class="ytdl-segment-btn ytdl-btn-del" data-action="delete" title="Eliminar">✕</button>
+                        </div>
                     </div>
                     ${editing ? `
                     <div class="ytdl-segment-edit">
-                        <div class="ytdl-tl-wrap" id="ytdl-tl">
+                        <div id="ytdl-tl">
                             <div class="ytdl-tl-track">
                                 <div class="ytdl-tl-range"></div>
                                 <div class="ytdl-tl-playhead"></div>
@@ -468,12 +669,13 @@
                                 <div class="ytdl-tl-handle" data-edge="end"></div>
                             </div>
                             <div class="ytdl-tl-labels">
-                                <span class="ytdl-tl-from">${formatTime(state.tlView.a)}</span>
+                                <span>${formatTime(state.tlView.a)}</span>
                                 <span class="ytdl-tl-cur">${formatTimePrecise(seg.start)} → ${formatTimePrecise(seg.end)}</span>
-                                <span class="ytdl-tl-to">${formatTime(state.tlView.b)}</span>
+                                <span>${formatTime(state.tlView.b)}</span>
                             </div>
                             <div class="ytdl-tl-hint">Arrastra los bordes para recortar · clic en la barra para ver ese punto</div>
                         </div>
+
                         <div class="ytdl-edit-row">
                             <span class="ytdl-edit-label">Inicio</span>
                             <span class="ytdl-edit-time">${formatTimePrecise(seg.start)}</span>
@@ -481,7 +683,7 @@
                             <button class="ytdl-nudge-btn" data-edge="start" data-delta="-0.1">-.1</button>
                             <button class="ytdl-nudge-btn" data-edge="start" data-delta="0.1">+.1</button>
                             <button class="ytdl-nudge-btn" data-edge="start" data-delta="1">+1s</button>
-                            <button class="ytdl-edit-seek" data-edge="start" data-action="seek">▶ Ver</button>
+                            <button class="ytdl-edit-seek" data-edge="start" data-action="seek">Ver</button>
                         </div>
                         <div class="ytdl-edit-row">
                             <span class="ytdl-edit-label">Fin</span>
@@ -490,28 +692,30 @@
                             <button class="ytdl-nudge-btn" data-edge="end" data-delta="-0.1">-.1</button>
                             <button class="ytdl-nudge-btn" data-edge="end" data-delta="0.1">+.1</button>
                             <button class="ytdl-nudge-btn" data-edge="end" data-delta="1">+1s</button>
-                            <button class="ytdl-edit-seek" data-edge="end" data-action="seek">▶ Ver</button>
+                            <button class="ytdl-edit-seek" data-edge="end" data-action="seek">Ver</button>
                         </div>
                         <div class="ytdl-edit-row">
-                            <button class="ytdl-nudge-btn" data-edge="start" data-action="snap">● Fijar inicio en playhead</button>
+                            <button class="ytdl-nudge-btn" data-edge="start" data-action="snap">Inicio en playhead</button>
+                            <button class="ytdl-nudge-btn" data-edge="end" data-action="snap">Fin en playhead</button>
                         </div>
-                        <div class="ytdl-edit-row">
-                            <button class="ytdl-nudge-btn" data-edge="end" data-action="snap">● Fijar fin en playhead</button>
-                        </div>
-                        <div class="ytdl-edit-row ytdl-edit-sep">
-                            <label><input type="checkbox" class="ytdl-eff-input" data-field="zoomEnabled" ${seg.zoomEnabled ? 'checked' : ''}> Zoom</label>
-                            <input type="number" class="ytdl-eff-input" data-field="zoomFactor" value="${seg.zoomFactor}" min="1.05" max="3" step="0.05">
-                            <label><input type="checkbox" class="ytdl-eff-input" data-field="kenburns" ${seg.kenburns ? 'checked' : ''}> Ken Burns</label>
-                        </div>
-                        <div class="ytdl-edit-row">
-                            <span class="ytdl-edit-label">Transición→</span>
-                            <select class="ytdl-eff-input" data-field="transitionType">
-                                <option value="none" ${seg.transitionType === 'none' ? 'selected' : ''}>Ninguna</option>
-                                <option value="fade" ${seg.transitionType === 'fade' ? 'selected' : ''}>Fade</option>
-                                <option value="dissolve" ${seg.transitionType === 'dissolve' ? 'selected' : ''}>Dissolve</option>
-                                <option value="wipe" ${seg.transitionType === 'wipe' ? 'selected' : ''}>Wipe</option>
-                            </select>
-                            <input type="number" class="ytdl-eff-input" data-field="transitionDuration" value="${seg.transitionDuration}" min="0.2" max="3" step="0.1">s
+
+                        <div class="ytdl-edit-fx">
+                            <div class="ytdl-edit-row">
+                                <label class="ytdl-check"><input type="checkbox" class="ytdl-eff-input" data-field="zoomEnabled" ${seg.zoomEnabled ? 'checked' : ''}> Zoom</label>
+                                <input type="number" class="ytdl-input ytdl-input-num ytdl-eff-input" data-field="zoomFactor" value="${seg.zoomFactor}" min="1.05" max="3" step="0.05">
+                                <label class="ytdl-check"><input type="checkbox" class="ytdl-eff-input" data-field="kenburns" ${seg.kenburns ? 'checked' : ''}> Ken Burns</label>
+                            </div>
+                            <div class="ytdl-edit-row" style="margin-top:6px">
+                                <span class="ytdl-edit-label" style="width:auto">Transición</span>
+                                <select class="ytdl-input ytdl-eff-input" data-field="transitionType">
+                                    <option value="none" ${seg.transitionType === 'none' ? 'selected' : ''}>Ninguna</option>
+                                    <option value="fade" ${seg.transitionType === 'fade' ? 'selected' : ''}>Fade</option>
+                                    <option value="dissolve" ${seg.transitionType === 'dissolve' ? 'selected' : ''}>Dissolve</option>
+                                    <option value="wipe" ${seg.transitionType === 'wipe' ? 'selected' : ''}>Wipe</option>
+                                </select>
+                                <input type="number" class="ytdl-input ytdl-input-num ytdl-eff-input" data-field="transitionDuration" value="${seg.transitionDuration}" min="0.2" max="3" step="0.1">
+                                <span class="ytdl-segment-dur">s</span>
+                            </div>
                         </div>
                     </div>` : ''}
                 </div>`;
@@ -563,7 +767,15 @@
                     if (!seg) return;
                     const field = e.currentTarget.dataset.field;
                     if (e.currentTarget.type === 'checkbox') seg[field] = e.currentTarget.checked;
-                    else if (e.currentTarget.type === 'number') seg[field] = parseFloat(e.currentTarget.value) || 0;
+                    else if (e.currentTarget.type === 'number') {
+                        const parsed = parseFloat(e.currentTarget.value);
+                        // Si el campo queda vacío o inválido no debe colapsar a 0
+                        // (con zoomFactor=0, ctx.scale(0,0) deja el vídeo invisible
+                        // en la vista previa). Usamos el mínimo del propio input.
+                        const min = parseFloat(e.currentTarget.min);
+                        seg[field] = Number.isFinite(parsed) ? parsed : (Number.isFinite(min) ? min : 0);
+                        e.currentTarget.value = seg[field];
+                    }
                     else seg[field] = e.currentTarget.value;
                 };
             });
@@ -579,8 +791,7 @@
         const wrap = document.getElementById('ytdl-tl');
         if (!wrap || state.editingIndex === null) return;
 
-        const idx = state.editingIndex;
-        const seg = state.segments[idx];
+        const seg = state.segments[state.editingIndex];
         const view = state.tlView;
         const track = wrap.querySelector('.ytdl-tl-track');
         const range = wrap.querySelector('.ytdl-tl-range');
@@ -697,16 +908,18 @@
     function updateMergeButton() {
         const btn = document.getElementById('ytdl-merge');
         if (btn) btn.disabled = state.segments.length < 1 || state.jobId !== null;
+        const pv = document.getElementById('ytdl-preview-btn');
+        if (pv) pv.disabled = state.segments.length < 1;
     }
 
     // ================== MARCADO ==================
     function onMarkStart() {
         const video = getVideo();
-        if (!video) { setStatus('⚠️ No encuentro el reproductor'); return; }
+        if (!video) { setStatus('No encuentro el reproductor', 'error'); return; }
         state.marking = { start: video.currentTime };
         document.getElementById('ytdl-mark-start').disabled = true;
         document.getElementById('ytdl-mark-end').disabled = false;
-        setStatus('● Grabando desde ' + formatTime(video.currentTime));
+        setStatus('Grabando desde ' + formatTime(video.currentTime), 'recording');
     }
 
     function onMarkEnd() {
@@ -715,7 +928,7 @@
         if (!video) return;
         const end = video.currentTime;
         if (end <= state.marking.start) {
-            setStatus('⚠️ El fin debe ser después del inicio');
+            setStatus('El fin debe ser posterior al inicio', 'error');
             return;
         }
         state.segments.push({
@@ -759,6 +972,277 @@
         };
     }
 
+    // ================== VISTA PREVIA ==================
+    // Reproduce los trozos en orden dibujando cada fotograma en un canvas,
+    // con los mismos efectos visuales que se aplicarán al unir.
+    // Limitación: el audio es el del vídeo original (música y normalización no se oyen).
+    const PREVIEW_SIZES = { '16:9': [1280, 720], '9:16': [720, 1280], '1:1': [720, 720] };
+    let preview = null;
+
+    function buildTimeline() {
+        let offset = 0;
+        return state.segments.map((seg, index) => {
+            const item = { seg, index, offset, len: seg.end - seg.start };
+            offset += item.len;
+            return item;
+        });
+    }
+
+    function drawFit(ctx, video, x, y, w, h, mode) {
+        const scale = mode === 'cover'
+            ? Math.max(w / video.videoWidth, h / video.videoHeight)
+            : Math.min(w / video.videoWidth, h / video.videoHeight);
+        const dw = video.videoWidth * scale;
+        const dh = video.videoHeight * scale;
+        ctx.drawImage(video, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+    }
+
+    function drawOverlayText(ctx, text, position, w, h, alpha) {
+        const size = Math.round(h * 0.05);
+        const y = position === 'top' ? h * 0.1 : position === 'center' ? h / 2 : h * 0.9;
+        ctx.save();
+        ctx.font = `600 ${size}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.globalAlpha = alpha;
+        ctx.shadowColor = 'rgba(0,0,0,0.8)';
+        ctx.shadowBlur = size * 0.3;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(text, w / 2, y);
+        ctx.restore();
+    }
+
+    function drawLoadingFrame(ctx, w, h) {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+        drawOverlayText(ctx, 'Cargando…', 'center', w, h, 0.8);
+    }
+
+    function drawPreviewFrame(p) {
+        const { ctx, canvas, video, cfg, timeline, current: item, globalT: gT, total } = p;
+        const w = canvas.width;
+        const h = canvas.height;
+        const seg = item.seg;
+        const local = video.currentTime;
+
+        // Mientras el navegador sigue buscando el punto exacto del vídeo (típico al
+        // saltar a una parte del VOD que no estaba bufferizada) mostramos un aviso
+        // en vez de un frame viejo o negro, para que no parezca que está congelado.
+        if (video.seeking) {
+            drawLoadingFrame(ctx, w, h);
+            return;
+        }
+
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, w, h);
+        if (!video.videoWidth) return;
+
+        // Formato: fondo difuminado + vídeo centrado (como en 9:16 y 1:1)
+        if (cfg.aspect_ratio !== 'original') {
+            ctx.save();
+            ctx.filter = 'blur(24px)';
+            drawFit(ctx, video, 0, 0, w, h, 'cover');
+            ctx.restore();
+        }
+
+        // Zoom por trozo (estático o Ken Burns)
+        let zoom = seg.zoomEnabled ? seg.zoomFactor : 1;
+        if (!Number.isFinite(zoom) || zoom <= 0) zoom = 1; // salvaguarda: nunca colapsar el dibujo
+        if (seg.zoomEnabled && seg.kenburns) {
+            const prog = Math.min(1, Math.max(0, (local - seg.start) / Math.max(0.1, item.len)));
+            zoom = 1 + (zoom - 1) * prog;
+        }
+        ctx.save();
+        ctx.translate(w / 2, h / 2);
+        ctx.scale(zoom, zoom);
+        drawFit(ctx, video, -w / 2, -h / 2, w, h, 'contain');
+        ctx.restore();
+
+        // Fundido a negro: transición de salida del trozo y de entrada al siguiente
+        let dark = 0;
+        const outD = seg.transitionType !== 'none' && item.index < timeline.length - 1 ? seg.transitionDuration : 0;
+        const toEnd = seg.end - local;
+        if (outD > 0 && toEnd < outD) dark = Math.max(dark, 1 - toEnd / outD);
+        const prev = timeline[item.index - 1];
+        if (prev && prev.seg.transitionType !== 'none') {
+            const inD = prev.seg.transitionDuration;
+            const sinceStart = local - seg.start;
+            if (sinceStart < inD) dark = Math.max(dark, 1 - sinceStart / inD);
+        }
+        // Fade in / fade out globales del clip
+        if (cfg.fade_in > 0 && gT < cfg.fade_in) dark = Math.max(dark, 1 - gT / cfg.fade_in);
+        if (cfg.fade_out > 0 && total - gT < cfg.fade_out) dark = Math.max(dark, 1 - (total - gT) / cfg.fade_out);
+        if (dark > 0) {
+            ctx.fillStyle = `rgba(0,0,0,${Math.min(1, dark)})`;
+            ctx.fillRect(0, 0, w, h);
+        }
+
+        // Título: primer trozo entero, o solo los primeros 5s del clip
+        if (cfg.title) {
+            const showTitle = cfg.title.duration === 'full' ? item.index === 0 : gT < 5;
+            if (showTitle) drawOverlayText(ctx, cfg.title.text, cfg.title.position, w, h, 1);
+        }
+        // Marca de agua: en todos los trozos
+        if (cfg.watermark) drawOverlayText(ctx, cfg.watermark.text, cfg.watermark.position, w, h, 0.6);
+    }
+
+    function segmentAt(t, timeline) {
+        return timeline.find(it => t >= it.offset && t < it.offset + it.len) || timeline[timeline.length - 1];
+    }
+
+    function updatePreviewProgress(p) {
+        const bar = document.getElementById('ytdl-pv-bar');
+        const time = document.getElementById('ytdl-pv-time');
+        if (bar) bar.style.width = (p.globalT / p.total) * 100 + '%';
+        if (time) time.textContent = formatTime(p.globalT) + ' / ' + formatTime(p.total);
+    }
+
+    function seekPreview(gT) {
+        const p = preview;
+        if (!p) return;
+        gT = Math.min(Math.max(0, gT), p.total - 0.01);
+        const item = segmentAt(gT, p.timeline);
+        p.current = item;
+        p.globalT = gT;
+        p.video.currentTime = item.seg.start + (gT - item.offset);
+    }
+
+    function previewTick() {
+        const p = preview;
+        if (!p) return;
+
+        try {
+            if (!p.video.seeking) {
+                const cur = p.current;
+                const local = p.video.currentTime;
+                if (p.playing && local >= cur.seg.end - 0.05) {
+                    // Fin del trozo: saltar al inicio del siguiente
+                    const next = p.timeline[cur.index + 1];
+                    if (next) {
+                        p.current = next;
+                        p.globalT = next.offset;
+                        p.video.currentTime = next.seg.start;
+                    } else {
+                        pausePreview();
+                        p.globalT = p.total;
+                    }
+                } else {
+                    p.globalT = cur.offset + Math.min(cur.len, Math.max(0, local - cur.seg.start));
+                }
+            }
+
+            drawPreviewFrame(p);
+            updatePreviewProgress(p);
+        } catch (err) {
+            // Un error puntual en el dibujo (p.ej. algún efecto con un valor inválido)
+            // ya no debe matar el bucle de animación en silencio: lo registramos y
+            // seguimos intentando en el siguiente frame.
+            console.error('[YTDL Clipper] Error dibujando la vista previa:', err);
+        }
+
+        p.raf = requestAnimationFrame(previewTick);
+    }
+
+    function playPreview() {
+        const p = preview;
+        if (!p) return;
+        if (p.globalT >= p.total - 0.05) seekPreview(0);
+        p.playing = true;
+        p.video.play().catch(() => { /* el navegador puede bloquear la reproducción */ });
+        p.playBtn.textContent = 'Pausar';
+    }
+
+    function pausePreview() {
+        const p = preview;
+        if (!p) return;
+        p.playing = false;
+        p.video.pause();
+        p.playBtn.textContent = 'Reproducir';
+    }
+
+    function openPreview() {
+        if (state.segments.length === 0) return;
+        const video = getVideo();
+        if (!video) { setStatus('No encuentro el reproductor', 'error'); return; }
+        closePreview();
+
+        const cfg = readEffectsOutput();
+        const timeline = buildTimeline();
+        const total = timeline.reduce((acc, it) => acc + it.len, 0);
+
+        // Guardamos el estado real del vídeo para restaurarlo al cerrar, y tomamos
+        // control total (lo pausamos) para que la vista previa no compita con el
+        // vídeo si este se estaba reproduciendo cuando abriste el diálogo.
+        const originalTime = video.currentTime;
+        const wasPlaying = !video.paused;
+        video.pause();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'ytdl-pv-overlay';
+        setHTML(overlay, `
+            <div class="ytdl-pv-box">
+                <div class="ytdl-pv-head">
+                    <span class="ytdl-pv-title">Vista previa del clip</span>
+                    <button class="ytdl-icon-btn" id="ytdl-pv-close" title="Cerrar (Esc)" aria-label="Cerrar">✕</button>
+                </div>
+                <div class="ytdl-pv-stage"><canvas id="ytdl-pv-canvas"></canvas></div>
+                <div class="ytdl-pv-controls">
+                    <button class="ytdl-btn ytdl-btn-primary" id="ytdl-pv-play">Reproducir</button>
+                    <div class="ytdl-pv-progress" id="ytdl-pv-progress"><div class="ytdl-pv-bar" id="ytdl-pv-bar"></div></div>
+                    <span class="ytdl-pv-time" id="ytdl-pv-time">0:00 / ${formatTime(total)}</span>
+                </div>
+                <div class="ytdl-pv-note">La música y la normalización de audio no se escuchan aquí: el sonido es el del vídeo original.</div>
+            </div>
+        `);
+        document.body.appendChild(overlay);
+
+        const canvas = overlay.querySelector('#ytdl-pv-canvas');
+        const size = cfg.aspect_ratio === 'original'
+            ? [video.videoWidth || 1280, video.videoHeight || 720]
+            : PREVIEW_SIZES[cfg.aspect_ratio];
+        canvas.width = size[0];
+        canvas.height = size[1];
+
+        const onKey = (e) => { if (e.key === 'Escape') closePreview(); };
+        document.addEventListener('keydown', onKey);
+
+        preview = {
+            video, cfg, timeline, total,
+            canvas, ctx: canvas.getContext('2d'),
+            current: timeline[0], globalT: 0, playing: false, raf: null,
+            playBtn: overlay.querySelector('#ytdl-pv-play'),
+            onKey, originalTime, wasPlaying,
+        };
+
+        overlay.querySelector('#ytdl-pv-close').onclick = closePreview;
+        overlay.querySelector('#ytdl-pv-play').onclick = () => (preview && preview.playing ? pausePreview() : playPreview());
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) closePreview(); });
+        overlay.querySelector('#ytdl-pv-progress').addEventListener('click', (e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            seekPreview(((e.clientX - rect.left) / rect.width) * preview.total);
+        });
+
+        seekPreview(0);
+        // Primer dibujo inmediato (muestra "Cargando…" si el seek no es instantáneo)
+        drawPreviewFrame(preview);
+        preview.raf = requestAnimationFrame(previewTick);
+    }
+
+    function closePreview() {
+        if (!preview) return;
+        cancelAnimationFrame(preview.raf);
+        const { video, originalTime, wasPlaying } = preview;
+        // Devolvemos el vídeo real a como estaba antes de abrir la vista previa,
+        // en vez de dejarlo donde lo dejó el último trozo previsualizado.
+        video.currentTime = originalTime;
+        if (wasPlaying) video.play().catch(() => { /* el navegador puede bloquear la reproducción */ });
+        else video.pause();
+        document.removeEventListener('keydown', preview.onKey);
+        const el = document.getElementById('ytdl-pv-overlay');
+        if (el) el.remove();
+        preview = null;
+    }
+
     // ================== ENVIAR AL WORKER ==================
     function onMerge() {
         if (state.segments.length === 0) return;
@@ -779,12 +1263,12 @@
         log('Payload a enviar:', payload);
 
         if (CONFIG.MOCK_MODE) {
-            setStatus('🧪 MOCK: payload en consola');
+            setStatus('MOCK: payload en consola');
             console.log(JSON.stringify(payload, null, 2));
             return;
         }
 
-        setStatus('⏳ Enviando al Worker...');
+        setStatus('Enviando al Worker…');
         document.getElementById('ytdl-merge').disabled = true;
 
         GM_xmlhttpRequest({
@@ -797,19 +1281,19 @@
                     const data = JSON.parse(resp.responseText);
                     if (data.ok && data.jobId) {
                         state.jobId = data.jobId;
-                        setStatus('⏳ Procesando... (job ' + data.jobId + ')');
+                        setStatus('Procesando (job ' + data.jobId + ')');
                         startPolling();
                     } else {
-                        setStatus('❌ Error: ' + (data.error || 'desconocido'));
+                        setStatus('Error: ' + (data.error || 'desconocido'), 'error');
                         updateMergeButton();
                     }
                 } catch (e) {
-                    setStatus('❌ Respuesta inválida del Worker');
+                    setStatus('Respuesta inválida del Worker', 'error');
                     updateMergeButton();
                 }
             },
             onerror: () => {
-                setStatus('❌ No se pudo contactar al Worker');
+                setStatus('No se pudo contactar al Worker', 'error');
                 updateMergeButton();
             }
         });
@@ -828,10 +1312,10 @@
         setHTML(box, `
             <video class="ytdl-video" id="ytdl-video" controls playsinline preload="metadata" src="${escAttr(preview)}"></video>
             <div class="ytdl-result-actions">
-                <a href="${escAttr(preview)}" target="_blank" rel="noopener">▶ Ver online</a>
-                <button class="ytdl-mini-btn" id="ytdl-copy">🔗 Copiar enlace</button>
-                <button class="ytdl-mini-btn" id="ytdl-share" style="display:none">📤 Compartir</button>
-                <a href="${escAttr(data.downloadUrl)}" target="_blank" rel="noopener">⬇️ Descargar</a>
+                <a href="${escAttr(preview)}" target="_blank" rel="noopener">Ver online</a>
+                <button class="ytdl-mini-btn" id="ytdl-copy">Copiar enlace</button>
+                <button class="ytdl-mini-btn" id="ytdl-share" style="display:none">Compartir</button>
+                <a href="${escAttr(data.downloadUrl)}" target="_blank" rel="noopener">Descargar</a>
             </div>
             <div class="ytdl-hint" id="ytdl-hint">El enlace para ver y compartir dura 7 días.</div>
         `);
@@ -840,7 +1324,7 @@
             hint.textContent = 'Esta página bloquea el reproductor incrustado: usa "Ver online" (se abre en una pestaña nueva).';
         });
         document.getElementById('ytdl-copy').addEventListener('click', () => {
-            const done = () => { hint.textContent = '✅ Enlace copiado (válido 7 días).'; };
+            const done = () => { hint.textContent = 'Enlace copiado (válido 7 días).'; };
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(preview).then(done, () => window.prompt('Copia el enlace:', preview));
             } else {
@@ -874,18 +1358,18 @@
                     if (data.status === 'completed' && data.downloadUrl) {
                         clearInterval(state.pollTimer);
                         state.pollTimer = null;
-                        setStatus('✅ Clip listo');
+                        setStatus('Clip listo');
                         showResult(data);
                         state.jobId = null;
                         updateMergeButton();
                     } else if (data.status === 'error') {
                         clearInterval(state.pollTimer);
                         state.pollTimer = null;
-                        setStatus('❌ Error: ' + (data.error || 'desconocido'));
+                        setStatus('Error: ' + (data.error || 'desconocido'), 'error');
                         state.jobId = null;
                         updateMergeButton();
                     } else {
-                        setStatus('⏳ ' + (data.progress || 0) + '% — ' + (data.status || 'procesando'));
+                        setStatus((data.progress || 0) + '% · ' + (data.status || 'procesando'));
                     }
                 } catch (e) { /* ignorar */ }
             }
@@ -893,12 +1377,26 @@
     }
 
     // ================== NAVEGACIÓN SPA ==================
+    // Compara solo la identidad del video (no la URL completa), para que un
+    // cambio de parámetro como "t=" (que YouTube añade solo al reproducir/buscar)
+    // no se confunda con un cambio real de vídeo y borre los trozos marcados.
+    function getVideoKey() {
+        if (location.hostname.includes('youtube.com')) {
+            const v = new URLSearchParams(location.search).get('v');
+            if (v) return 'yt:' + v;
+            return location.pathname; // shorts u otras rutas sin ?v=
+        }
+        // twitch.tv/videos/12345?t=1h2m -> nos quedamos solo con el pathname
+        return location.pathname;
+    }
+
     function observeNavigation() {
-        let lastUrl = location.href;
+        let lastKey = getVideoKey();
         setInterval(() => {
-            if (location.href !== lastUrl) {
-                lastUrl = location.href;
-                log('Navegación detectada:', lastUrl);
+            const key = getVideoKey();
+            if (key !== lastKey) {
+                lastKey = key;
+                log('Navegación detectada:', key);
                 state.segments = [];
                 state.marking = null;
                 state.jobId = null;
