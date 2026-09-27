@@ -422,19 +422,14 @@ async function publishStatus(env: Env, jobId: string): Promise<Response> {
   return json({ status: "in_progress", progress: 95 });
 }
 
-async function serveEditor(): Promise<Response> {
-  const res = await fetch("https://raw.githubusercontent.com/lediergzl/cliping/main/editor.html", {
-    cf: { cacheTtl: 60, cacheEverything: true },
-  });
-  if (!res.ok) return new Response("Editor no disponible", { status: 503 });
-  return new Response(res.body, {
-    status: 200,
-    headers: {
-      "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "public, max-age=60",
-      "X-Content-Type-Options": "nosniff",
-    },
-  });
+function serveEditor(): Response {
+  // El editor es un archivo estático del repositorio. Evitamos hacer un
+  // fetch() desde el Worker hacia GitHub en cada apertura: además de añadir
+  // un punto de fallo, puede producir errores 1101/1102 del Worker.
+  return Response.redirect(
+    "https://raw.githubusercontent.com/lediergzl/cliping/main/editor.html",
+    302,
+  );
 }
 
 export default {
