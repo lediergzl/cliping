@@ -9,7 +9,7 @@ on:
         required: true
         type: string
       payload:
-        description: 'JSON: { url, segments: [{start,end,zoom,transition}], output }'
+        description: 'JSON: { url, segments: [{source_url,start,end,zoom,transition}], output }'
         required: true
         type: string
 
@@ -79,9 +79,9 @@ jobs:
         run: |
           mkdir -p clips
           printf '%s' "$PAYLOAD" > payload.json
-          URL=$(jq -r '.url' payload.json)
+          FALLBACK_URL=$(jq -r '.url // empty' payload.json)
           COUNT=$(jq '.segments | length' payload.json)
-          echo "URL: $URL — $COUNT segmento(s)"
+          echo "Proyecto: $COUNT segmento(s), con origen por segmento"
 
           # Cookies de sesión (necesarias en YouTube desde IPs de datacenter)
           COOKIE_ARGS=()
@@ -131,18 +131,25 @@ jobs:
           for i in $(seq 0 $((COUNT - 1))); do
             START=$(jq -r ".segments[$i].start" payload.json)
             END=$(jq -r ".segments[$i].end" payload.json)
+            SOURCE_URL=$(jq -r ".segments[$i].source_url // .url // empty" payload.json)
             IDX=$(printf "%03d" "$i")
+            if [ -z "$SOURCE_URL" ] || [ "$SOURCE_URL" = "null" ]; then
+              echo "::error::El segmento $IDX no tiene source_url y no existe URL global de respaldo"
+              exit 1
+            fi
             echo "Segmento $IDX: $START -> $END"
-            # Se prefiere H.264+AAC (se reproduce en cualquier sitio); si no existe,
-            # build_clip.py recodifica el resultado.
+            echo "Origen: $SOURCE_URL"
+            # Cada segmento se descarga desde SU PROPIO vídeo. Esto permite
+            # mezclar trozos de YouTube/Twitch/VODs diferentes en un mismo clip.
             if ! ytdlp_run \
                 --download-sections "*${START}-${END}" \
                 --force-keyframes-at-cuts \
                 -f "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*+ba/b" \
                 --merge-output-format mp4 \
                 -o "clips/segment_${IDX}.mp4" \
-                "$URL"; then
-              echo "::error::YouTube bloqueó la descarga con todos los clientes. Renueva las cookies (YTDL_COOKIES, exportadas desde una ventana de incógnito) o usa PROXY_URL / un self-hosted runner."
+                "$SOURCE_URL"; then
+              echo "::error::No se pudo descargar el origen del segmento $IDX: $SOURCE_URL"
+              echo "Renueva las cookies (YTDL_COOKIES), usa PROXY_URL o un self-hosted runner si el sitio bloquea GitHub Actions."
               exit 1
             fi
           done
