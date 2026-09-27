@@ -124,8 +124,20 @@ function sanitizeSegmentEffects(s: any) {
   return extra;
 }
 
+function validateSourceUrl(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim() || value.length > 2048) return null;
+  try {
+    const u = new URL(value.trim());
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
 function validatePayload(body: any): { ok: true; segments: any[]; output: any } | { ok: false; error: string } {
-  if (!body?.url || typeof body.url !== "string") return { ok: false, error: "Falta 'url'" };
+  const fallbackUrl = validateSourceUrl(body?.url);
+  if (!fallbackUrl) return { ok: false, error: "Falta 'url' válida" };
   if (!Array.isArray(body.segments) || body.segments.length === 0) return { ok: false, error: "Falta 'segments'" };
   if (body.segments.length > MAX_SEGMENTS) return { ok: false, error: `Máximo ${MAX_SEGMENTS} trozos` };
 
@@ -137,10 +149,11 @@ function validatePayload(body: any): { ok: true; segments: any[]; output: any } 
     if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) {
       return { ok: false, error: "Trozo inválido (start/end)" };
     }
+    const sourceUrl = validateSourceUrl(s?.source_url) || fallbackUrl;
     const dur = end - start;
     if (dur > MAX_SEGMENT_SECONDS) return { ok: false, error: `Un trozo supera ${MAX_SEGMENT_SECONDS}s` };
     total += dur;
-    segments.push({ start, end, ...sanitizeSegmentEffects(s) });
+    segments.push({ source_url: sourceUrl, start, end, ...sanitizeSegmentEffects(s) });
   }
   if (total > MAX_TOTAL_SECONDS) return { ok: false, error: `Duración total supera ${MAX_TOTAL_SECONDS}s` };
 
