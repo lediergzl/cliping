@@ -1,0 +1,118 @@
+name: Deploy Cloudflare Worker
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "worker/**"
+      - ".github/workflows/deploy-worker.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-cloudflare-worker
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Instalar dependencias del Worker
+        working-directory: worker
+        run: npm install
+
+      - name: Preparar configuración de Cloudflare
+        env:
+          CLOUDFLARE_KV_NAMESPACE_ID: ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CLOUDFLARE_KV_NAMESPACE_ID:-}" ]; then
+            echo "::error::Falta el secret CLOUDFLARE_KV_NAMESPACE_ID"
+            exit 1
+          fi
+
+          cp worker/wrangler.toml worker/wrangler.deploy.toml
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("worker/wrangler.deploy.toml")
+          text = path.read_text(encoding="utf-8")
+          placeholder = "PON-AQUI-EL-ID-QUE-DEVUELVE-wrangler-kv-namespace-create"
+          kv_id = "${CLOUDFLARE_KV_NAMESPACE_ID}"
+
+          if placeholder not in text:
+              raise SystemExit(
+                  "No se encontró el placeholder esperado de PUBLISH_KV en wrangler.toml"
+              )
+
+          path.write_text(
+              text.replace(placeholder, kv_id),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Desplegar Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::Falta el secret CLOUDFLARE_API_TOKEN"
+            exit 1
+          fi
+
+          if [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "::error::Falta el secret CLOUDFLARE_ACCOUNT_ID"
+            exit 1
+          fi
+
+          npx wrangler deploy --config worker/wrangler.deploy.toml
+
+      - name: Configurar secretos del Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_GITHUB_TOKEN: ${{ secrets.WORKER_GITHUB_TOKEN }}
+          WORKER_CLIENT_TOKEN: ${{ secrets.WORKER_CLIENT_TOKEN }}
+          WORKER_SESSION_ENC_KEY: ${{ secrets.WORKER_SESSION_ENC_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${WORKER_GITHUB_TOKEN:-}" ]; then
+            echo "::error::Falta WORKER_GITHUB_TOKEN"
+            exit 1
+          fi
+          if [ -z "${WORKER_CLIENT_TOKEN:-}" ]; then
+            echo "::error::Falta WORKER_CLIENT_TOKEN"
+            exit 1
+          fi
+          if [ -z "${WORKER_SESSION_ENC_KEY:-}" ]; then
+            echo "::error::Falta WORKER_SESSION_ENC_KEY"
+            exit 1
+          fi
+
+          printf '%s' "$WORKER_GITHUB_TOKEN" | npx wrangler secret put GITHUB_TOKEN --config worker/wrangler.deploy.toml
+          printf '%s' "$WORKER_CLIENT_TOKEN" | npx wrangler secret put CLIENT_TOKEN --config worker/wrangler.deploy.toml
+          printf '%s' "$WORKER_SESSION_ENC_KEY" | npx wrangler secret put SESSION_ENC_KEY --config worker/wrangler.deploy.toml
+
+      - name: Limpiar configuración temporal
+        if: always()
+        run: rm -f worker/wrangler.deploy.toml
