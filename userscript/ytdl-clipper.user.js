@@ -27,12 +27,14 @@
 
     // ================== ESTADO ==================
     const state = {
-        segments: [],      // [{ start, end, ...efectos }]
-        marking: null,     // null | { start }
+        segments: [],      // [{ sourceUrl, sourceKey, start, end, ...efectos }]
+        marking: null,     // null | { start, sourceUrl, sourceKey }
         jobId: null,
         pollTimer: null,
-        editingIndex: null, // índice del trozo abierto para ajuste fino, o null
-        tlView: null,       // { a, b }: ventana de tiempo que muestra la barra de recorte
+        editingIndex: null,
+        tlView: null,
+        currentVideoKey: null,
+        currentVideoUrl: null,
     };
 
     // ================== ANCHO DEL PANEL ==================
@@ -90,6 +92,33 @@
     // de 6h para no resucitar trozos de una sesión de marcado ya olvidada.
     const SEGMENTS_KEY_PREFIX = 'ytdl-clipper-segments:';
     const SEGMENTS_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+    const PROJECT_SEGMENTS_KEY = 'ytdl-clipper-project-segments:v2';
+
+    function normalizeSegment(seg, sourceUrl, sourceKey) {
+        const s = { ...seg };
+        if (!s.sourceUrl) s.sourceUrl = sourceUrl || getCurrentUrl();
+        if (!s.sourceKey) s.sourceKey = sourceKey || getVideoKey();
+        return s;
+    }
+
+    function saveProjectSegments() {
+        try {
+            if (!state.segments.length) { gmDelete(PROJECT_SEGMENTS_KEY); return; }
+            gmSet(PROJECT_SEGMENTS_KEY, JSON.stringify({ segments: state.segments, savedAt: Date.now() }));
+        } catch (e) { /* ignorar */ }
+    }
+
+    function loadProjectSegments() {
+        const raw = gmGet(PROJECT_SEGMENTS_KEY, null);
+        if (!raw) return null;
+        try {
+            const parsed = JSON.parse(raw);
+            if (!parsed || !Array.isArray(parsed.segments) || !parsed.segments.length) return null;
+            if (Date.now() - (parsed.savedAt || 0) > SEGMENTS_MAX_AGE_MS) { gmDelete(PROJECT_SEGMENTS_KEY); return null; }
+            return parsed.segments.map(s => normalizeSegment(s, null, null));
+        } catch (e) { return null; }
+    }
 
     function saveSegmentsFor(videoKey) {
         if (!videoKey) return;
@@ -877,7 +906,21 @@
         if (!el) return;
         const total = state.segments.reduce((acc, s) => acc + (s.end - s.start), 0);
         const n = state.segments.length;
-        el.textContent = n + (n === 1 ? ' trozo' : ' trozos') + ' · ' + formatTime(total);
+        const sources = new Set(state.segments.map(s => s.sourceKey || s.sourceUrl).filter(Boolean)).size;
+        el.textContent = n + (n === 1 ? ' trozo' : ' trozos') + ' · ' + formatTime(total) + (sources > 1 ? ' · ' + sources + ' vídeos' : '');
+    }
+
+    function sourceLabel(url) {
+        try {
+            const u = new URL(url);
+            if (u.hostname.includes('youtube.com')) {
+                const v = u.searchParams.get('v');
+                return 'YouTube ' + (v ? v.slice(0, 8) : u.pathname);
+            }
+            if (u.hostname.includes('youtu.be')) return 'YouTube ' + u.pathname.replace(/^\//, '').slice(0, 8);
+            if (u.hostname.includes('twitch.tv')) return 'Twitch ' + (u.pathname.split('/').filter(Boolean).pop() || 'video');
+            return u.hostname;
+        } catch (e) { return 'origen'; }
     }
 
     function renderSegments() {
@@ -900,6 +943,7 @@
                             <span class="ytdl-segment-time">
                                 ${formatTime(seg.start)} → ${formatTime(seg.end)}
                                 <span class="ytdl-segment-dur">· ${formatTime(seg.end - seg.start)}</span>
+                                ${seg.sourceUrl ? '<span class="ytdl-segment-source" title="' + escAttr(seg.sourceUrl) + '">' + escAttr(sourceLabel(seg.sourceUrl)) + '</span>' : ''}
                             </span>
                         </div>
                         <div class="ytdl-segment-actions">
@@ -978,13 +1022,20 @@
                     if (action === 'delete') {
                         state.segments.splice(idx, 1);
                         if (state.editingIndex === idx) state.editingIndex = null;
+                        saveProjectSegments();
                     } else if (action === 'up' && idx > 0) {
                         [state.segments[idx - 1], state.segments[idx]] = [state.segments[idx], state.segments[idx - 1]];
                     } else if (action === 'down' && idx < state.segments.length - 1) {
                         [state.segments[idx], state.segments[idx + 1]] = [state.segments[idx + 1], state.segments[idx]];
                     } else if (action === 'edit') {
+                        const seg = state.segments[idx];
+                        if (seg && seg.sourceKey && seg.sourceKey !== getVideoKey()) {
+                            setStatus('Para editar este trozo, abre primero su vídeo de origen', 'error');
+                            return;
+                        }
                         state.editingIndex = state.editingIndex === idx ? null : idx;
                     }
+                    saveProjectSegments();
                     renderSegments();
                 };
             });
@@ -1091,6 +1142,7 @@
             function onUp() {
                 window.removeEventListener('pointermove', onMove);
                 window.removeEventListener('pointerup', onUp);
+                saveProjectSegments();
                 renderSegments();
             }
 
@@ -1166,7 +1218,11 @@
     function onMarkStart() {
         const video = getVideo();
         if (!video) { setStatus('No encuentro el reproductor', 'error'); return; }
-        state.marking = { start: video.currentTime };
+        state.marking = {
+            start: video.currentTime,
+            sourceUrl: getCurrentUrl(),
+            sourceKey: getVideoKey(),
+        };
         document.getElementById('ytdl-mark-start').disabled = true;
         document.getElementById('ytdl-mark-end').disabled = false;
         setStatus('Grabando desde ' + formatTime(video.currentTime), 'recording');
@@ -1182,10 +1238,14 @@
             return;
         }
         state.segments.push({
-            start: state.marking.start, end,
+            sourceUrl: state.marking.sourceUrl || getCurrentUrl(),
+            sourceKey: state.marking.sourceKey || getVideoKey(),
+            start: state.marking.start,
+            end,
             zoomEnabled: false, zoomFactor: 1.15, kenburns: false,
             transitionType: 'none', transitionDuration: 0.5,
         });
+        saveProjectSegments();
         state.marking = null;
         document.getElementById('ytdl-mark-start').disabled = false;
         document.getElementById('ytdl-mark-end').disabled = true;
@@ -1512,6 +1572,7 @@
         const payload = {
             url,
             segments: state.segments.map(s => ({
+                source_url: s.sourceUrl || url,
                 start: s.start,
                 end: s.end,
                 zoom: s.zoomEnabled ? { factor: s.zoomFactor, kenburns: !!s.kenburns } : null,
@@ -1673,18 +1734,15 @@
 
         function commitChange(newKey) {
             if (!newKey || newKey === lastKey) return;
-            saveSegmentsFor(lastKey); // por si el usuario vuelve a este vídeo más tarde
+            saveProjectSegments();
             log('Navegación confirmada:', newKey);
             lastKey = newKey;
 
+            state.currentVideoKey = newKey;
+            state.currentVideoUrl = getCurrentUrl();
             state.marking = null;
-            state.jobId = null;
             state.editingIndex = null;
             state.tlView = null;
-            if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
-
-            const restored = loadSegmentsFor(newKey);
-            state.segments = restored || [];
 
             const result = document.getElementById('ytdl-result');
             if (result) setHTML(result, '');
@@ -1692,7 +1750,7 @@
             const btnEnd = document.getElementById('ytdl-mark-end');
             if (btnStart) btnStart.disabled = false;
             if (btnEnd) btnEnd.disabled = true;
-            setStatus(restored ? ('Recuperados ' + restored.length + ' trozo(s) de este vídeo') : 'Listo');
+            setStatus(state.segments.length ? ('Vídeo cambiado · ' + state.segments.length + ' trozo(s) conservados') : 'Listo');
             renderSegments();
         }
 
@@ -1722,7 +1780,7 @@
                     autosaveTick++;
                     if (autosaveTick >= AUTOSAVE_EVERY_N_TICKS) {
                         autosaveTick = 0;
-                        saveSegmentsFor(lastKey);
+                        saveProjectSegments();
                     }
                 }
                 return;
@@ -1747,7 +1805,20 @@
     // ================== ARRANQUE ==================
     function init() {
         if (document.body) {
+            state.currentVideoKey = getVideoKey();
+            state.currentVideoUrl = getCurrentUrl();
+            const project = loadProjectSegments();
+            if (project && project.length) {
+                state.segments = project;
+            } else {
+                const legacy = loadSegmentsFor(state.currentVideoKey);
+                if (legacy && legacy.length) {
+                    state.segments = legacy.map(s => normalizeSegment(s, state.currentVideoUrl, state.currentVideoKey));
+                    saveProjectSegments();
+                }
+            }
             injectPanel();
+            renderSegments();
             observeNavigation();
         } else {
             setTimeout(init, 500);
