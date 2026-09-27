@@ -37,7 +37,7 @@ function makeJobId(): string {
 
 function jobTimestamp(jobId: string): number {
   // Los jobs de publicación tienen formato pub-<timestamp>-<uuid>.
-  const match = jobId.match(/(?:^|-)(\\d{10,})-/);
+  const match = jobId.match(/(?:^|-)(\d{10,})-/);
   const ts = match ? Number(match[1]) : 0;
   return Number.isFinite(ts) ? ts : 0;
 }
@@ -166,8 +166,8 @@ async function dispatchWorkflow(env: Env, jobId: string, payload: unknown) {
   }
 }
 
-// GitHub no devuelve el run_id al disparar workflow_dispatch, así que
-// buscamos el run más antiguo creado después del timestamp del jobId.
+// GitHub no devuelve el run_id al disparar workflow_dispatch.
+// Correlacionamos por el display_title único generado desde job_id.
 async function findRun(env: Env, jobId: string) {
   const since = jobTimestamp(jobId) - 15000;
   const expectedRunName = "Merge Clip " + jobId;
