@@ -1576,7 +1576,7 @@
             output: readEffectsOutput(),
         };
         const editorUrl = CONFIG.WORKER_URL + '/editor#' + encodeEditorProject(project);
-        const win = window.open(editorUrl, '_blank', 'noopener,noreferrer');
+        const win = window.open(editorUrl, '_blank');
         if (!win) setStatus('El navegador bloqueó la ventana del editor', 'error');
     }
 
