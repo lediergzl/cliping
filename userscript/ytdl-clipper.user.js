@@ -1212,6 +1212,8 @@
     function updateMergeButton() {
         const btn = document.getElementById('ytdl-merge');
         if (btn) btn.disabled = state.segments.length < 1 || state.jobId !== null;
+        const ed = document.getElementById('ytdl-editor-btn');
+        if (ed) ed.disabled = state.segments.length < 1;
         const pv = document.getElementById('ytdl-preview-btn');
         if (pv) pv.disabled = state.segments.length < 1;
     }
