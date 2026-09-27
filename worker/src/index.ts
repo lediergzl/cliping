@@ -36,7 +36,9 @@ function makeJobId(): string {
 }
 
 function jobTimestamp(jobId: string): number {
-  const ts = Number(jobId.split("-")[0]);
+  // Los jobs de publicación tienen formato pub-<timestamp>-<uuid>.
+  const match = jobId.match(/(?:^|-)(\\d{10,})-/);
+  const ts = match ? Number(match[1]) : 0;
   return Number.isFinite(ts) ? ts : 0;
 }
 
@@ -167,14 +169,15 @@ async function dispatchWorkflow(env: Env, jobId: string, payload: unknown) {
 // GitHub no devuelve el run_id al disparar workflow_dispatch, así que
 // buscamos el run más antiguo creado después del timestamp del jobId.
 async function findRun(env: Env, jobId: string) {
-  const since = jobTimestamp(jobId) - 15000; // margen de 15s
-  const url = `${GH_API}/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/${env.GITHUB_WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=10`;
+  const since = jobTimestamp(jobId) - 15000;
+  const expectedRunName = "Merge Clip " + jobId;
+  const url = GH_API + "/repos/" + env.GITHUB_OWNER + "/" + env.GITHUB_REPO + "/actions/workflows/" + env.GITHUB_WORKFLOW_FILE + "/runs?event=workflow_dispatch&per_page=20";
   const res = await fetch(url, { headers: ghHeaders(env) });
   if (!res.ok) return null;
   const data: any = await res.json();
   const candidates = (data.workflow_runs || [])
-    .filter((r: any) => new Date(r.created_at).getTime() >= since)
-    .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    .filter((r: any) => r.display_title === expectedRunName && new Date(r.created_at).getTime() >= since)
+    .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   return candidates[0] || null;
 }
 
@@ -355,13 +358,14 @@ async function dispatchPublishWorkflow(env: Env, jobId: string, payload: unknown
 
 async function findPublishRun(env: Env, jobId: string) {
   const since = jobTimestamp(jobId) - 15000;
-  const url = `${GH_API}/repos/${env.GITHUB_OWNER}/${env.GITHUB_REPO}/actions/workflows/${env.GITHUB_PUBLISH_WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=10`;
+  const expectedRunName = "Publish Clip " + jobId;
+  const url = GH_API + "/repos/" + env.GITHUB_OWNER + "/" + env.GITHUB_REPO + "/actions/workflows/" + env.GITHUB_PUBLISH_WORKFLOW_FILE + "/runs?event=workflow_dispatch&per_page=20";
   const res = await fetch(url, { headers: ghHeaders(env) });
   if (!res.ok) return null;
   const data: any = await res.json();
   const candidates = (data.workflow_runs || [])
-    .filter((r: any) => new Date(r.created_at).getTime() >= since)
-    .sort((a: any, b: any) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    .filter((r: any) => r.display_title === expectedRunName && new Date(r.created_at).getTime() >= since)
+    .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   return candidates[0] || null;
 }
 
