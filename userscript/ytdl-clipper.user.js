@@ -1566,7 +1566,7 @@
         for (let i = 0; i < bytes.length; i += 0x8000) {
             binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
         }
-        return btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+        return btoa(binary).split('+').join('-').split('/').join('_').replace(/=+$/, '');
     }
 
     function openEditor() {
