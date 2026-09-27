@@ -435,6 +435,7 @@
                         <h3 class="ytdl-section-title">Exportar</h3>
                     </div>
                     <div class="ytdl-export-row">
+                        <button id="ytdl-editor-btn" class="ytdl-btn ytdl-btn-secondary" disabled>Abrir editor</button>
                         <button id="ytdl-preview-btn" class="ytdl-btn ytdl-btn-secondary" disabled>Vista previa</button>
                         <button id="ytdl-merge" class="ytdl-btn ytdl-btn-primary" disabled>Unir y descargar</button>
                     </div>
@@ -743,6 +744,7 @@
         setupPanelResize(panel);
         document.getElementById('ytdl-mark-start').onclick = onMarkStart;
         document.getElementById('ytdl-mark-end').onclick = onMarkEnd;
+        document.getElementById('ytdl-editor-btn').onclick = openEditor;
         document.getElementById('ytdl-merge').onclick = onMerge;
         document.getElementById('ytdl-preview-btn').onclick = openPreview;
         [['eff-audio-vol', 'eff-audio-vol-v'], ['eff-audio-orig', 'eff-audio-orig-v']].forEach(([inp, out]) => {
@@ -1555,21 +1557,33 @@
         preview = null;
     }
 
-    // ================== ENVIAR AL WORKER ==================
-    function onMerge() {
-        if (state.segments.length === 0) return;
-        const url = getCurrentUrl();
-        const output = readEffectsOutput();
-
-        // Aviso suave (no bloquea): recuerda revisar el checklist de la campaña
-        // actual antes de exportar sin título ni insignia, por si tu brief los exige.
-        if (!output.title && !output.badge) {
-            if (!confirm('Vas a exportar sin título ni insignia. Si tu campaña actual los exige, revisa el checklist antes de continuar.\n\n¿Continuar igualmente?')) {
-                return;
-            }
+    // ================== EDITOR SEPARADO ==================
+    function encodeEditorProject(project) {
+        const bytes = new TextEncoder().encode(JSON.stringify(project));
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
         }
+        return btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/g, '');
+    }
 
-        const payload = {
+    function openEditor() {
+        if (!state.segments.length) return;
+        const project = {
+            id: 'project-' + Date.now(),
+            name: 'Proyecto YTDL Clipper',
+            segments: state.segments.map(s => ({ ...s })),
+            output: readEffectsOutput(),
+        };
+        const editorUrl = CONFIG.WORKER_URL + '/editor#' + encodeEditorProject(project);
+        const win = window.open(editorUrl, '_blank', 'noopener,noreferrer');
+        if (!win) setStatus('El navegador bloqueó la ventana del editor', 'error');
+    }
+
+    // ================== ENVIAR AL WORKER ==================
+    function buildMergePayload(output) {
+        const url = getCurrentUrl();
+        return {
             url,
             segments: state.segments.map(s => ({
                 source_url: s.sourceUrl || url,
@@ -1581,6 +1595,16 @@
             })),
             output,
         };
+    }
+
+    function submitMergePayload(payload) {
+        if (!payload?.segments?.length) return;
+
+        if (!payload.output?.title && !payload.output?.badge) {
+            if (!confirm('Vas a exportar sin título ni insignia. Si tu campaña actual los exige, revisa el checklist antes de continuar.\n\n¿Continuar igualmente?')) {
+                return;
+            }
+        }
 
         log('Payload a enviar:', payload);
 
@@ -1620,6 +1644,23 @@
             }
         });
     }
+
+    function onMerge() {
+        if (state.segments.length === 0) return;
+        submitMergePayload(buildMergePayload(readEffectsOutput()));
+    }
+
+    window.addEventListener('message', (event) => {
+        if (event.data?.type !== 'ytdl-editor-export') return;
+        if (!event.data.payload || !Array.isArray(event.data.payload.segments)) return;
+        state.segments = event.data.payload.segments.map(s => normalizeSegment({
+            ...s,
+            sourceUrl: s.source_url || s.sourceUrl,
+        }, s.source_url || null, null));
+        saveProjectSegments();
+        renderSegments();
+        submitMergePayload(event.data.payload);
+    });
 
     // ================== RESULTADO: VER ONLINE / COMPARTIR ==================
     function escAttr(str) {
