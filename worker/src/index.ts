@@ -422,6 +422,21 @@ async function publishStatus(env: Env, jobId: string): Promise<Response> {
   return json({ status: "in_progress", progress: 95 });
 }
 
+async function serveEditor(): Promise<Response> {
+  const res = await fetch("https://raw.githubusercontent.com/lediergzl/cliping/main/editor.html", {
+    cf: { cacheTtl: 60, cacheEverything: true },
+  });
+  if (!res.ok) return new Response("Editor no disponible", { status: 503 });
+  return new Response(res.body, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "public, max-age=60",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -434,6 +449,12 @@ export default {
           "Access-Control-Allow-Headers": "Content-Type, X-Client-Token, Range",
         },
       });
+    }
+
+    // Editor separado tipo CapCut. No requiere token: el editor no contiene
+    // credenciales y el export vuelve al userscript que sí tiene autorización.
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname === "/editor") {
+      return serveEditor();
     }
 
     // Vista online: protegida por enlace firmado (un <video> no envía cabeceras).
