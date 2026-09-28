@@ -80,6 +80,33 @@ function sanitizeAudio(a: any) {
 
 function sanitizeOutput(out: any) {
   const o = out || {};
+  const subtitlesRaw = o.subtitles || {};
+  const subtitleModel = ["tiny", "base", "small"].includes(subtitlesRaw.model)
+    ? subtitlesRaw.model
+    : "base";
+  const subtitlePosition = ["top", "center", "bottom"].includes(subtitlesRaw.position)
+    ? subtitlesRaw.position
+    : "bottom";
+  const subtitleColor = typeof subtitlesRaw.color === "string" && /^#[0-9a-f]{6}$/i.test(subtitlesRaw.color)
+    ? subtitlesRaw.color.toLowerCase()
+    : "#ffffff";
+  const subtitleActiveColor = typeof subtitlesRaw.active_color === "string" && /^#[0-9a-f]{6}$/i.test(subtitlesRaw.active_color)
+    ? subtitlesRaw.active_color.toLowerCase()
+    : "#ffff00";
+  const subtitleFontSize = Math.min(Math.max(Math.round(Number(subtitlesRaw.font_size) || 54), 28), 96);
+  const subtitleOutline = Math.min(Math.max(Math.round(Number(subtitlesRaw.outline) || 3), 0), 8);
+  const subtitleShadow = Math.min(Math.max(Math.round(Number(subtitlesRaw.shadow) || 1), 0), 6);
+  const subtitles = subtitlesRaw.enabled === true ? {
+    enabled: true,
+    model: subtitleModel,
+    position: subtitlePosition,
+    color: subtitleColor,
+    active_color: subtitleActiveColor,
+    font_size: subtitleFontSize,
+    outline: subtitleOutline,
+    shadow: subtitleShadow,
+  } : null;
+
   const result: any = {
     aspect_ratio: ASPECTS.has(o.aspect_ratio) ? o.aspect_ratio : "original",
     fade_in: Math.min(Math.max(Number(o.fade_in) || 0, 0), 5),
@@ -88,6 +115,7 @@ function sanitizeOutput(out: any) {
     title: null,
     watermark: null,
     badge: null,
+    subtitles,
     audio: sanitizeAudio(o.audio),
   };
   if (o.title?.text && typeof o.title.text === "string") {
