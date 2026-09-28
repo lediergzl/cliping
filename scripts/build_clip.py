@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Construye el clip final aplicando efectos (v2) a partir de los segmentos ya
+Construye el clip final aplicando efectos (v3) y subtítulos ASS a partir de los segmentos ya
 descargados por yt-dlp (clips/segment_XXX.mp4) y del payload.json original.
 
 Uso: python3 build_clip.py payload.json clips/ output.mp4
