@@ -23,7 +23,7 @@ concurrency:
 jobs:
   merge:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,6 +69,9 @@ jobs:
           sudo apt-get install -y ffmpeg curl
           pip install -U yt-dlp yt-dlp-ejs
           pip install -U "bgutil-ytdlp-pot-provider==2.0.0"
+          # faster-whisper se usa dentro de build_clip.py para transcribir
+          # una sola vez por job y generar los ASS con timestamps por palabra.
+          pip install -U faster-whisper
 
       - name: Descargar y recortar segmentos
         env:
