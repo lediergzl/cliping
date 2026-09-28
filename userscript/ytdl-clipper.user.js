@@ -1571,15 +1571,64 @@
 
     function openEditor() {
         if (!state.segments.length) return;
+
         const project = {
             id: 'project-' + Date.now(),
             name: 'Proyecto YTDL Clipper',
             segments: state.segments.map(s => ({ ...s })),
             output: readEffectsOutput(),
         };
-        const editorUrl = CONFIG.WORKER_URL + '/editor#' + encodeEditorProject(project);
-        const win = window.open(editorUrl, '_blank');
-        if (!win) setStatus('El navegador bloqueó la ventana del editor', 'error');
+
+        // El editor NO depende del Worker para abrirse. Abrimos primero una
+        // ventana vacía (para evitar que el navegador bloquee el popup) y luego
+        // cargamos el HTML estático del repositorio directamente con
+        // GM_xmlhttpRequest. Así /editor del Worker deja de formar parte de este
+        // flujo y el proyecto sigue llegando por el hash.
+        const win = window.open('about:blank', '_blank');
+        if (!win) {
+            setStatus('El navegador bloqueó la ventana del editor', 'error');
+            return;
+        }
+
+        const editorSourceUrl =
+            'https://raw.githubusercontent.com/lediergzl/cliping/main/editor.html';
+        const encodedProject = encodeEditorProject(project);
+
+        win.document.open();
+        win.document.write('<!doctype html><html><body style="font-family:system-ui;padding:30px">Cargando editor…</body></html>');
+        win.document.close();
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: editorSourceUrl + '?v=' + Date.now(),
+            headers: { 'Accept': 'text/html' },
+            onload: (resp) => {
+                if (resp.status < 200 || resp.status >= 300 || !resp.responseText) {
+                    win.document.body.innerHTML =
+                        '<h3>No se pudo cargar el editor</h3><p>HTTP ' + resp.status + '</p>';
+                    return;
+                }
+
+                // El editor lee location.hash durante su arranque. Inyectamos
+                // el proyecto antes de su script principal para que load()
+                // encuentre los trozos inmediatamente.
+                const hashScript =
+                    '<script>location.hash="#' + encodedProject + '";<\/script>';
+
+                const html = resp.responseText.replace(
+                    '</head>',
+                    hashScript + '</head>'
+                );
+
+                win.document.open();
+                win.document.write(html);
+                win.document.close();
+            },
+            onerror: () => {
+                win.document.body.innerHTML =
+                    '<h3>No se pudo cargar el editor</h3><p>Comprueba la conexión a GitHub.</p>';
+            }
+        });
     }
 
     // ================== ENVIAR AL WORKER ==================
