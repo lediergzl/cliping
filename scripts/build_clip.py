@@ -32,6 +32,7 @@ renderizado con drawtext, no una imagen real de ningún logo (evita tener que
 subir/mantener un asset .png en el runner de Actions).
 """
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -105,8 +106,155 @@ def y_expr(position: str) -> str:
     return {"top": "40", "center": "(h-text_h)/2", "bottom": "h-text_h-40"}.get(position, "h-text_h-40")
 
 
+# ================== SUBTÍTULOS ASS ==================
+# faster-whisper devuelve timestamps por palabra. El modelo se carga una sola
+# vez por job para que varios segmentos no vuelvan a descargar/cargar el modelo.
+_WHISPER_MODEL = None
+
+
+def ass_time(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    total_cs = int(round(seconds * 100))
+    cs = total_cs % 100
+    total_s = total_cs // 100
+    s = total_s % 60
+    total_m = total_s // 60
+    m = total_m % 60
+    h = total_m // 60
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def ass_color(hex_color: str) -> str:
+    """Convierte #RRGGBB a color ASS/SSA &HAABBGGRR."""
+    if not isinstance(hex_color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", hex_color):
+        hex_color = "#ffffff"
+    r = hex_color[1:3]
+    g = hex_color[3:5]
+    b = hex_color[5:7]
+    return f"&H00{b}{g}{r}".upper()
+
+
+def ass_escape_text(text: str) -> str:
+    """Evita que texto reconocido pueda crear etiquetas ASS."""
+    return (str(text).replace("\\", "\\\\")
+            .replace("{", "\\{").replace("}", "\\}")
+            .replace("\n", " ").replace("\r", " ").strip())
+
+
+def subtitle_alignment(position: str) -> int:
+    return {"top": 8, "center": 5, "bottom": 2}.get(position, 2)
+
+
+def load_whisper_model(model_name: str):
+    global _WHISPER_MODEL
+    if _WHISPER_MODEL is None:
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            print("::error::No se pudo importar faster-whisper:", exc)
+            sys.exit(1)
+        print(f"Cargando faster-whisper '{model_name}' en CPU/int8...", flush=True)
+        _WHISPER_MODEL = WhisperModel(model_name, device="cpu", compute_type="int8")
+    return _WHISPER_MODEL
+
+
+def transcribe_to_ass(src: Path, ass_path: Path, cfg: dict, play_w: int, play_h: int):
+    """Transcribe un segmento y genera ASS con karaoke por palabra."""
+    model_name = cfg.get("model") if cfg.get("model") in ("tiny", "base", "small") else "base"
+    position = cfg.get("position") if cfg.get("position") in ("top", "center", "bottom") else "bottom"
+    font_size = min(max(int(cfg.get("font_size") or 54), 28), 96)
+    outline = min(max(int(cfg.get("outline") or 3), 0), 8)
+    shadow = min(max(int(cfg.get("shadow") or 1), 0), 6)
+    primary = ass_color(cfg.get("color", "#ffffff"))
+    secondary = ass_color(cfg.get("active_color", "#ffff00"))
+    alignment = subtitle_alignment(position)
+
+    if not has_audio(src):
+        raise RuntimeError(f"El segmento {src.name} no tiene audio; no se pueden generar subtítulos.")
+
+    model = load_whisper_model(model_name)
+    print(f"Transcribiendo {src.name} con faster-whisper/{model_name}...", flush=True)
+    segments, info = model.transcribe(
+        str(src),
+        word_timestamps=True,
+        vad_filter=True,
+        condition_on_previous_text=False,
+    )
+
+    words = []
+    for segment in segments:
+        for word in (segment.words or []):
+            if word.start is None or word.end is None:
+                continue
+            text_word = ass_escape_text(word.word)
+            if not text_word:
+                continue
+            start = max(0.0, float(word.start))
+            end = max(start + 0.01, float(word.end))
+            words.append({"start": start, "end": end, "text": text_word})
+
+    header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {play_w}
+PlayResY: {play_h}
+ScaledBorderAndShadow: yes
+WrapStyle: 2
+YCbCr Matrix: TV.709
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,{font_size},{primary},{secondary},&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},{alignment},60,60,80,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+    lines = []
+    current = []
+    chars = 0
+    max_words = 5
+    max_chars = 42
+
+    def flush():
+        if not current:
+            return
+        start = current[0]["start"]
+        end = current[-1]["end"]
+        parts = []
+        cursor = start
+        for item in current:
+            # Conserva silencios entre palabras para que el resaltado no se
+            # adelante cuando el hablante deja una pausa.
+            gap_cs = max(0, int(round((item["start"] - cursor) * 100)))
+            if gap_cs > 0:
+                parts.append("{\\k" + str(gap_cs) + "}")
+            dur_cs = max(1, int(round((item["end"] - item["start"]) * 100)))
+            parts.append("{\\k" + str(dur_cs) + "}" + item["text"] + " ")
+            cursor = item["end"]
+        text_line = "".join(parts).rstrip()
+        lines.append(
+            f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{text_line}"
+        )
+        current.clear()
+
+    for word in words:
+        projected = chars + (1 if current else 0) + len(word["text"])
+        if current and (len(current) >= max_words or projected > max_chars):
+            flush()
+            chars = 0
+        current.append(word)
+        chars += (1 if chars else 0) + len(word["text"])
+    flush()
+
+    ass_path.write_text(header + "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    print(f"Subtítulos: {len(words)} palabras → {ass_path.name}", flush=True)
+
+
 def has_effects(payload: dict) -> bool:
     out = payload.get("output") or {}
+    subtitles = out.get("subtitles") or {}
+    if subtitles.get("enabled"):
+        return True
     if (out.get("aspect_ratio") or "original") != "original":
         return True
     if (out.get("fade_in") or 0) > 0 or (out.get("fade_out") or 0) > 0:
@@ -124,8 +272,8 @@ def has_effects(payload: dict) -> bool:
     return False
 
 
-def build_segment_filter(aspect, canvas, zoom, watermark, title, badge, fade_in, fade_out,
-                          is_first, is_last, src_w, src_h, seg_dur):
+def build_segment_filter(aspect, canvas, zoom, watermark, title, badge, subtitles_ass,
+                          fade_in, fade_out, is_first, is_last, src_w, src_h, seg_dur):
     w, h = canvas if canvas else (src_w, src_h)
     steps = []
 
@@ -209,6 +357,13 @@ def build_segment_filter(aspect, canvas, zoom, watermark, title, badge, fade_in,
         )
         cur = "[vtitle]"
 
+    if subtitles_ass:
+        # libass quema el ASS sobre el canvas FINAL, después de crop/zoom.
+        # La ruta se escapa para el parser de filtros de FFmpeg.
+        ass_file = str(subtitles_ass).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+        steps.append(f"{cur}ass=filename='{ass_file}'[vsub]")
+        cur = "[vsub]"
+
     if is_first and fade_in > 0:
         steps.append(f"{cur}fade=t=in:st=0:d={fade_in}[vfi]")
         cur = "[vfi]"
@@ -239,7 +394,7 @@ def build_audio_filter(normalize, is_first, is_last, fade_in, fade_out, seg_dur,
     return ";".join(steps)
 
 
-def process_segment(src, dst, payload_output, seg_effects, is_first, is_last, common_canvas=None):
+def process_segment(src, dst, payload_output, seg_effects, subtitles_ass, is_first, is_last, common_canvas=None):
     aspect = payload_output.get("aspect_ratio") or "original"
     canvas = common_canvas if common_canvas is not None else CANVAS.get(aspect)
     src_w = int(probe(src, "width"))
@@ -249,6 +404,7 @@ def process_segment(src, dst, payload_output, seg_effects, is_first, is_last, co
     vfilter, w, h = build_segment_filter(
         aspect, canvas, seg_effects.get("zoom"),
         payload_output.get("watermark"), payload_output.get("title"), payload_output.get("badge"),
+        subtitles_ass,
         float(payload_output.get("fade_in") or 0), float(payload_output.get("fade_out") or 0),
         is_first, is_last, src_w, src_h, seg_dur,
     )
@@ -405,6 +561,32 @@ def main():
         print("No hay segmentos descargados en", clips_dir)
         sys.exit(1)
 
+    subtitle_cfg = output_cfg.get("subtitles") or {}
+    subtitle_enabled = bool(subtitle_cfg.get("enabled"))
+    subtitle_files = {}
+
+    if subtitle_enabled:
+        # El canvas de subtítulos debe coincidir con el canvas final para que
+        # posición y tamaño sean consistentes en horizontal y vertical.
+        subtitle_canvas = CANVAS.get(output_cfg.get("aspect_ratio") or "original")
+        if subtitle_canvas is None:
+            sizes = set()
+            for p in raw_clips:
+                sizes.add((int(probe(p, "width")), int(probe(p, "height"))))
+            if len(sizes) == 1:
+                subtitle_canvas = next(iter(sizes))
+            else:
+                subtitle_canvas = (max(w for w, _ in sizes), max(h for _, h in sizes))
+            subtitle_canvas = (
+                subtitle_canvas[0] + subtitle_canvas[0] % 2,
+                subtitle_canvas[1] + subtitle_canvas[1] % 2,
+            )
+
+        for i, src in enumerate(raw_clips):
+            ass_path = clips_dir / f"subs_{i:03d}.ass"
+            transcribe_to_ass(src, ass_path, subtitle_cfg, *subtitle_canvas)
+            subtitle_files[i] = ass_path
+
     # Con música, primero se construye el clip y luego se mezcla el audio.
     built = clips_dir / "built.mp4" if audio_cfg else output_path
 
@@ -446,7 +628,7 @@ def main():
             seg_effects = segments_cfg[i] if i < len(segments_cfg) else {}
             dst = clips_dir / f"proc_{i:03d}.mp4"
             process_segment(
-                src, dst, output_cfg, seg_effects,
+                src, dst, output_cfg, seg_effects, subtitle_files.get(i),
                 i == 0, i == len(raw_clips) - 1,
                 common_canvas,
             )
