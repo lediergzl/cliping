@@ -85,6 +85,10 @@ jobs:
             exit 1
           fi
 
+          # Diagnóstico seguro: no muestra el token, solo confirma su longitud.
+          echo "Longitud CLOUDFLARE_API_TOKEN: ${#CLOUDFLARE_API_TOKEN}"
+          echo "Longitud CLOUDFLARE_ACCOUNT_ID: ${#CLOUDFLARE_ACCOUNT_ID}"
+
           npx wrangler deploy --config worker/wrangler.deploy.toml
 
       - name: Configurar secretos del Worker
