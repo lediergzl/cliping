@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YTDL Clipper
 // @namespace    ytdl-clipper
-// @version      0.9.3
+// @version      0.9.4
 // @description  Marca trozos de un directo/VOD de YouTube o Twitch y los une en un clip
 // @match        https://www.youtube.com/*
 // @match        https://www.twitch.tv/*
