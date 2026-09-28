@@ -422,14 +422,35 @@ async function publishStatus(env: Env, jobId: string): Promise<Response> {
   return json({ status: "in_progress", progress: 95 });
 }
 
-function serveEditor(): Response {
-  // El editor es un archivo estático del repositorio. Evitamos hacer un
-  // fetch() desde el Worker hacia GitHub en cada apertura: además de añadir
-  // un punto de fallo, puede producir errores 1101/1102 del Worker.
-  return Response.redirect(
-    "https://raw.githubusercontent.com/lediergzl/cliping/main/editor.html",
-    302,
-  );
+async function serveEditor(): Promise<Response> {
+  // El editor es HTML estático del repositorio. Lo servimos directamente
+  // desde esta ruta para que /editor sea una página real del Worker y no
+  // una redirección a raw.githubusercontent.com.
+  const editorUrl =
+    "https://raw.githubusercontent.com/lediergzl/cliping/main/editor.html";
+
+  const upstream = await fetch(editorUrl, {
+    headers: { Accept: "text/html" },
+    cf: { cacheTtl: 60, cacheEverything: true },
+  });
+
+  if (!upstream.ok) {
+    return new Response("No se pudo cargar el editor", {
+      status: 502,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  const html = await upstream.text();
+
+  return new Response(html, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "public, max-age=60",
+      "X-YTDL-Editor": "standalone",
+    },
+  });
 }
 
 export default {
