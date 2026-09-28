@@ -9,7 +9,7 @@ on:
         required: true
         type: string
       payload:
-        description: 'JSON: { url, segments: [{source_url,start,end,zoom,transition}], output }'
+        description: 'JSON: { url, segments: [{source_url,start,end,zoom,transition}], output: { subtitles, ... } }'
         required: true
         type: string
 
