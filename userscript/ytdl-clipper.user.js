@@ -390,6 +390,45 @@
                         </div>
 
                         <div class="ytdl-group">
+                            <div class="ytdl-group-title">Subtítulos automáticos</div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-subtitles"><input type="checkbox" id="eff-subtitles"> Activar subtítulos</label>
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-subtitle-model">Modelo</label>
+                                <select id="eff-subtitle-model" class="ytdl-input">
+                                    <option value="tiny">Tiny · más rápido</option>
+                                    <option value="base" selected>Base · recomendado</option>
+                                    <option value="small">Small · más preciso</option>
+                                </select>
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-subtitle-position">Posición</label>
+                                <select id="eff-subtitle-position" class="ytdl-input">
+                                    <option value="top">Arriba</option>
+                                    <option value="center">Centro</option>
+                                    <option value="bottom" selected>Abajo</option>
+                                </select>
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-subtitle-size">Tamaño</label>
+                                <span class="ytdl-inline">
+                                    <input type="number" id="eff-subtitle-size" class="ytdl-input ytdl-input-num" min="28" max="96" step="2" value="54">
+                                    <span>px</span>
+                                </span>
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-subtitle-color">Color normal</label>
+                                <input type="color" id="eff-subtitle-color" value="#ffffff" style="min-height:42px;width:100%;padding:4px;">
+                            </div>
+                            <div class="ytdl-field">
+                                <label class="ytdl-label" for="eff-subtitle-active-color">Palabra activa</label>
+                                <input type="color" id="eff-subtitle-active-color" value="#ffff00" style="min-height:42px;width:100%;padding:4px;">
+                            </div>
+                            <div class="ytdl-hint">Cada palabra se sincroniza por separado. El color amarillo marca la palabra que se está pronunciando.</div>
+                        </div>
+
+                        <div class="ytdl-group">
                             <div class="ytdl-group-title">Audio</div>
                             <div class="ytdl-field">
                                 <label class="ytdl-label" for="eff-normalize"><input type="checkbox" id="eff-normalize"> Normalizar volumen</label>
@@ -1284,6 +1323,18 @@
             title: titleText ? { text: titleText, position: val('eff-title-pos').value, duration: val('eff-title-dur').value } : null,
             watermark: watermarkText ? { text: watermarkText, position: val('eff-watermark-pos').value } : null,
             badge: badgeText ? { text: badgeText } : null,
+            subtitles: {
+                enabled: val('eff-subtitles').checked,
+                model: val('eff-subtitle-model').value,
+                position: val('eff-subtitle-position').value,
+                font_size: Math.min(96, Math.max(28, parseInt(val('eff-subtitle-size').value, 10) || 54)),
+                color: val('eff-subtitle-color').value,
+                active_color: val('eff-subtitle-active-color').value,
+                // El borde y la sombra se mantienen deliberadamente sencillos en
+                // la UI; el Worker los vuelve a limitar antes de llegar a FFmpeg.
+                outline: 3,
+                shadow: 1,
+            },
             audio,
         };
     }
