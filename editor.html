@@ -40,7 +40,20 @@ const KEY='ytdl-clipper-editor-project:v1';
 let project={id:'project-'+Date.now(),name:'Proyecto sin título',segments:[],output:{aspect_ratio:'9:16',fade_in:0,fade_out:0,normalize_audio:false,title:null,watermark:null,badge:null,audio:null}};
 let selected=0, history=[], future=[], playing=false, playTimer=null, playTime=0;
 
-function decodeHash(){try{let s=location.hash.slice(1);if(!s)return null;s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';return JSON.parse(decodeURIComponent(escape(atob(s))))}catch(e){return null}}
+function decodeHash(){
+  try{
+    let s=location.hash.slice(1);
+    if(!s)return null;
+    s=s.replace(/-/g,'+').replace(/_/g,'/');
+    while(s.length%4)s+='=';
+    const binary=atob(s);
+    const bytes=Uint8Array.from(binary,c=>c.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes));
+  }catch(e){
+    console.error('YTDL Clipper: no se pudo decodificar el proyecto',e);
+    return null;
+  }
+}
 function encodeHash(v){return btoa(unescape(encodeURIComponent(JSON.stringify(v)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
 function clone(v){return JSON.parse(JSON.stringify(v))}
 function sourceLabel(url){try{let u=new URL(url);if(u.hostname.includes('youtube'))return 'YouTube';if(u.hostname.includes('twitch'))return 'Twitch';return u.hostname}catch(e){return 'origen'}}
@@ -48,7 +61,19 @@ function fmt(n){n=Math.max(0,Math.floor(n));let m=Math.floor(n/60),s=n%60;return
 function total(){return project.segments.reduce((a,s)=>a+Math.max(0,(+s.end||0)-(+s.start||0)),0)}
 function commit(){history.push(clone(project));if(history.length>40)history.shift();future=[];saveLocal();render()}
 function saveLocal(){try{localStorage.setItem(KEY,JSON.stringify(project));location.hash=encodeHash(project)}catch(e){}}
-function load(){let p=decodeHash();if(!p){try{p=JSON.parse(localStorage.getItem(KEY)||'null')}catch(e){}}if(p&&Array.isArray(p.segments))project=p;render()}
+function load(){
+  const hashProject=decodeHash();
+  let p=hashProject;
+  if(!p){
+    try{p=JSON.parse(localStorage.getItem(KEY)||'null')}catch(e){}
+  }
+  if(p&&Array.isArray(p.segments)){
+    project=p;
+  }else if(location.hash){
+    document.getElementById('stageMeta').textContent='No se pudo cargar el proyecto recibido.';
+  }
+  render();
+}
 function render(){renderMedia();renderTimeline();renderInspector();document.getElementById('summary').textContent=project.segments.length+' trozos · '+fmt(total());document.getElementById('time').textContent=fmt(playTime)+' / '+fmt(total());}
 function renderMedia(){let el=document.getElementById('media');if(!project.segments.length){el.innerHTML='<div class="empty">No hay trozos.</div>';return}el.innerHTML=project.segments.map((s,i)=>'<div class="asset '+(i===selected?'selected':'')+'" data-i="'+i+'"><b>Trozo '+(i+1)+'</b><span>'+fmt(s.start)+' → '+fmt(s.end)+' · '+fmt(s.end-s.start)+'</span><span>'+sourceLabel(s.sourceUrl||'')+'</span></div>').join('');el.querySelectorAll('.asset').forEach(x=>x.onclick=()=>{selected=+x.dataset.i;render()})}
 function renderTimeline(){let clips=document.getElementById('clips');clips.innerHTML='';project.segments.forEach((s,i)=>{let d=document.createElement('div');d.className='clip '+(i===selected?'selected':'');d.draggable=true;d.dataset.i=i;d.style.width=Math.max(120,(s.end-s.start)*10)+'px';d.innerHTML='<span class="num">'+(i+1)+'</span><button class="x">×</button><span class="dur">'+fmt(s.end-s.start)+'</span><span class="src">'+sourceLabel(s.sourceUrl||'')+'</span>';d.onclick=e=>{if(e.target.classList.contains('x'))return;selected=i;render()};d.querySelector('.x').onclick=e=>{e.stopPropagation();project.segments.splice(i,1);selected=Math.min(selected,project.segments.length-1);commit()};d.ondragstart=e=>e.dataTransfer.setData('text/plain',String(i));d.ondragover=e=>e.preventDefault();d.ondrop=e=>{e.preventDefault();let from=+e.dataTransfer.getData('text/plain'),to=i;if(from===to)return;let a=project.segments.splice(from,1)[0];project.segments.splice(to,0,a);selected=to;commit()};clips.appendChild(d)});let r=document.getElementById('ruler');r.innerHTML='';for(let i=0;i<=Math.ceil(total());i+=5){let t=document.createElement('span');t.className='tick';t.style.left=(i*10)+'px';t.textContent=fmt(i);r.appendChild(t)}document.getElementById('playhead').style.left=(14+playTime*10)+'px'}
@@ -56,7 +81,24 @@ function renderInspector(){let el=document.getElementById('inspector');let s=pro
 document.getElementById('zoom').value=s.zoomEnabled?String(s.zoomFactor):'none';document.getElementById('kenburns').checked=!!s.kenburns;document.getElementById('transition').value=s.transitionType||'none';document.getElementById('aspect').value=project.output.aspect_ratio||'9:16';document.getElementById('title').value=project.output.title?.text||'';document.getElementById('titlePos').value=project.output.title?.position||'bottom';document.getElementById('watermark').value=project.output.watermark?.text||'';document.getElementById('watermarkPos').value=project.output.watermark?.position||'bottom';document.getElementById('normalize').checked=!!project.output.normalize_audio;['start','end','zoom','kenburns','transition','tdur'].forEach(id=>document.getElementById(id).addEventListener('change',()=>{let n={...s};n.start=+document.getElementById('start').value;n.end=Math.max(n.start+.1,+document.getElementById('end').value);let z=document.getElementById('zoom').value;n.zoomEnabled=z!=='none';n.zoomFactor=z==='none'?1:+z;n.kenburns=document.getElementById('kenburns').checked;n.transitionType=document.getElementById('transition').value;n.transitionDuration=+document.getElementById('tdur').value;project.segments[selected]=n;commit()}));['aspect','title','titlePos','watermark','watermarkPos','normalize'].forEach(id=>document.getElementById(id).addEventListener('change',()=>{project.output.aspect_ratio=document.getElementById('aspect').value;let t=document.getElementById('title').value.trim();project.output.title=t?{text:t,position:document.getElementById('titlePos').value,duration:'start'}:null;let w=document.getElementById('watermark').value.trim();project.output.watermark=w?{text:w,position:document.getElementById('watermarkPos').value}:null;project.output.normalize_audio=document.getElementById('normalize').checked;commit()}))}
 function readOutput(){let o=project.output||{};return {...o,aspect_ratio:o.aspect_ratio||'9:16',title:o.title&&o.title.text?o.title:null,watermark:o.watermark&&o.watermark.text?o.watermark:null,badge:o.badge&&o.badge.text?o.badge:null}}
 function exportClip(){if(!project.segments.length)return alert('No hay trozos para exportar.');let output=readOutput();let payload={url:project.segments[0].sourceUrl||'',segments:project.segments.map(s=>({source_url:s.sourceUrl,start:s.start,end:s.end,zoom:s.zoomEnabled?{factor:s.zoomFactor,kenburns:!!s.kenburns}:null,transition:s.transitionType&&s.transitionType!=='none'?{type:s.transitionType,duration:s.transitionDuration||.5}:null})),output};if(window.opener&&!window.opener.closed){window.opener.postMessage({type:'ytdl-editor-export',payload},'*');document.getElementById('export').textContent='Enviado al capturador ✓';setTimeout(()=>document.getElementById('export').textContent='Exportar clip',1500)}else alert('Abre el editor desde el capturador para exportar.')}
-document.getElementById('export').onclick=exportClip;document.getElementById('save').onclick=()=>{saveLocal();alert('Proyecto guardado en este navegador.')};document.getElementById('undo').onclick=()=>{if(history.length){future.push(clone(project));project=history.pop();render()}};document.getElementById('redo').onclick=()=>{if(future.length){history.push(clone(project));project=future.pop();render()}};document.getElementById('new').onclick=()=>{if(confirm('¿Crear un proyecto vacío?')){history.push(clone(project));project={id:'project-'+Date.now(),name:'Proyecto nuevo',segments:[],output:{aspect_ratio:'9:16'}};selected=0;saveLocal();render()}};document.getElementById('play').onclick=()=>{playing=!playing;document.getElementById('play').textContent=playing?'❚❚':'▶';if(playing){playTimer=setInterval(()=>{playTime+=.1;if(playTime>=total()){playTime=0}render()} ,100)}else clearInterval(playTimer)};document.getElementById('back').onclick=()=>{playTime=Math.max(0,playTime-5);render()};document.getElementById('forward').onclick=()=>{playTime=Math.min(total(),playTime+5);render()};window.addEventListener('beforeunload',saveLocal);load();
+document.getElementById('export').onclick=exportClip;document.getElementById('save').onclick=()=>{saveLocal();alert('Proyecto guardado en este navegador.')};document.getElementById('undo').onclick=()=>{if(history.length){future.push(clone(project));project=history.pop();render()}};document.getElementById('redo').onclick=()=>{if(future.length){history.push(clone(project));project=future.pop();render()}};document.getElementById('new').onclick=()=>{if(confirm('¿Crear un proyecto vacío?')){history.push(clone(project));project={id:'project-'+Date.now(),name:'Proyecto nuevo',segments:[],output:{aspect_ratio:'9:16'}};selected=0;saveLocal();render()}};function updatePlaybackUI(){
+  document.getElementById('time').textContent=fmt(playTime)+' / '+fmt(total());
+  document.getElementById('playhead').style.left=(14+playTime*10)+'px';
+}
+document.getElementById('play').onclick=()=>{
+  playing=!playing;
+  document.getElementById('play').textContent=playing?'❚❚':'▶';
+  if(playing){
+    clearInterval(playTimer);
+    playTimer=setInterval(()=>{
+      playTime+=.1;
+      if(playTime>=total()){playTime=0}
+      updatePlaybackUI();
+    },100);
+  }else{
+    clearInterval(playTimer);
+  }
+};document.getElementById('back').onclick=()=>{playTime=Math.max(0,playTime-5);updatePlaybackUI()};document.getElementById('forward').onclick=()=>{playTime=Math.min(total(),playTime+5);updatePlaybackUI()};window.addEventListener('beforeunload',saveLocal);load();
 })();
 </script>
 </body>
