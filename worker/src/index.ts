@@ -139,6 +139,15 @@ function sanitizeOutput(out: any) {
 
 function sanitizeSegmentEffects(s: any) {
   const extra: any = {};
+  if (s?.transform && typeof s.transform === "object") {
+    extra.transform = {
+      x: Math.min(Math.max(Number(s.transform.x) || 0, -100), 100),
+      y: Math.min(Math.max(Number(s.transform.y) || 0, -100), 100),
+      scale: Math.min(Math.max(Number(s.transform.scale) || 1, 0.25), 4),
+      rotation: Math.min(Math.max(Number(s.transform.rotation) || 0, -180), 180),
+      fit: ["cover", "contain"].includes(s.transform.fit) ? s.transform.fit : "cover",
+    };
+  }
   if (s?.zoom?.factor) {
     const factor = Math.min(Math.max(Number(s.zoom.factor) || 1, 1), 3);
     if (factor > 1) extra.zoom = { factor, kenburns: !!s.zoom.kenburns };
