@@ -41,8 +41,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="extension-v1.0.0-build-${{ github.run_number }}"
-          gh release create "$TAG" \\
-            dist/ytdl-clipper-extension.zip \\
-            dist/ytdl-clipper-extension.sha256 \\
-            --title "YTDL Clipper Extension ${TAG}" \\
+          gh release create "$TAG" \
+            dist/ytdl-clipper-extension.zip \
+            dist/ytdl-clipper-extension.sha256 \
+            --title "YTDL Clipper Extension ${TAG}" \
             --generate-notes
