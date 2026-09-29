@@ -1,0 +1,37 @@
+name: Empaquetar extensión YTDL Clipper
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'extension/**'
+      - '.github/workflows/package-extension.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validar manifest
+        run: node -e "JSON.parse(require('fs').readFileSync('extension/manifest.json','utf8')); console.log('manifest.json válido')"
+
+      - name: Empaquetar extensión
+        run: |
+          mkdir -p dist
+          cd extension
+          zip -r ../dist/ytdl-clipper-extension.zip . -x '*.DS_Store'
+          cd ..
+          sha256sum dist/ytdl-clipper-extension.zip > dist/ytdl-clipper-extension.sha256
+
+      - name: Publicar artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytdl-clipper-extension
+          path: dist/
+          if-no-files-found: error
