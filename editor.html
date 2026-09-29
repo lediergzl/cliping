@@ -12,94 +12,54 @@ button,input,select{font:inherit}button{color:inherit;background:var(--panel2);b
 </style>
 </head>
 <body>
-<div class="app">
-<header class="top">
-  <div class="brand">YTDL Clipper <small>Editor</small></div>
-  <button id="undo">↶</button><button id="redo">↷</button>
-  <button id="new">Nuevo</button><button id="save">Guardar</button>
-  <button class="primary" id="export">Exportar clip</button>
-</header>
-<main class="work">
-  <aside class="left"><div class="section-title">Trozos capturados</div><div id="media" class="media"></div><div class="hint">Los trozos pueden venir de vídeos diferentes. Aquí solo se organiza el material; la descarga y renderización ocurren al exportar.</div></aside>
-  <section class="center">
-    <div class="preview"><div class="stage" id="stage"><div><div class="big">▶</div><div>Vista de composición</div><div class="hint">La previsualización de fuentes YouTube/Twitch se renderiza al exportar.</div></div><div class="meta" id="stageMeta"></div></div></div>
-    <div class="transport"><button id="play">▶</button><button id="back">−5s</button><button id="forward">+5s</button><span class="badge" id="time">0:00 / 0:00</span></div>
-  </section>
-  <aside class="right"><div class="section-title">Inspector</div><div id="inspector" class="inspector"></div></aside>
-</main>
-<section class="timeline">
-  <div class="tlhead"><b>Línea de tiempo</b><span id="summary"></span><span style="margin-left:auto" class="badge">Arrastra para reordenar</span></div>
-  <div class="track" id="track"><div class="ruler" id="ruler"></div><div class="clips" id="clips"></div><div class="playhead" id="playhead"></div></div>
-</section>
-</div>
+<div id="app"><header><b>YTDL Clipper</b><small>Editor</small><nav><button id="undo">↶</button><button id="redo">↷</button><button id="new">Nuevo</button><button id="save">Guardar</button><button class="primary" id="export">Exportar</button></nav></header>
+<main><aside id="left"><h4>MEDIOS</h4><div id="media"></div><h4>CLIPS</h4><div id="clips"></div><p>Los clips pueden venir de vídeos distintos y conservarse juntos.</p></aside>
+<section id="center"><div id="stage"><div class="empty">Selecciona un clip</div></div><div id="transport"><button id="play">▶</button><button id="back">−5s</button><span id="clock">0:00 / 0:00</span><button id="forward">+5s</button><button id="split">Cortar</button></div></section>
+<aside id="right"><h4>INSPECTOR</h4><div id="inspector"></div></aside></main>
+<section id="timeline"><div class="tlbar"><b>Timeline</b><span id="summary"></span><small>Arrastra para reordenar</small></div><div id="scroll"><div id="ruler"></div><div class="lane"><label>VIDEO</label><div id="tlclips"></div></div><div class="lane thin"><label>TEXTO</label></div><div class="lane thin"><label>AUDIO</label></div><i id="head"></i></div></section><div id="toast"></div>
 <script>
 (function(){
 'use strict';
-const WORKER='https://ytdl-clipper-worker.yode86.workers.dev';
-const KEY='ytdl-clipper-editor-project:v1';
-let project={id:'project-'+Date.now(),name:'Proyecto sin título',segments:[],output:{aspect_ratio:'9:16',fade_in:0,fade_out:0,normalize_audio:false,title:null,watermark:null,badge:null,audio:null}};
-let selected=0, history=[], future=[], playing=false, playTimer=null, playTime=0;
-
-function decodeHash(){
-  try{
-    let s=location.hash.slice(1);
-    if(!s)return null;
-    s=s.replace(/-/g,'+').replace(/_/g,'/');
-    while(s.length%4)s+='=';
-    const binary=atob(s);
-    const bytes=Uint8Array.from(binary,c=>c.charCodeAt(0));
-    return JSON.parse(new TextDecoder().decode(bytes));
-  }catch(e){
-    console.error('YTDL Clipper: no se pudo decodificar el proyecto',e);
-    return null;
-  }
+var KEY='ytdl-clipper-editor-project:v2',PX=18,project,selectedId=null,history=[],future=[],playTime=0,timer=null,playing=false;
+function uid(p){return p+'-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,7)}
+function clone(x){return JSON.parse(JSON.stringify(x))}
+function fmt(n){n=Math.max(0,Math.floor(+n||0));var m=Math.floor(n/60),s=n%60;return m+':'+String(s).padStart(2,'0')}
+function esc(x){return String(x==null?'':x).replace(/[&<>"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]})}
+function source(u){try{var h=new URL(u).hostname;if(h.indexOf('youtube')>=0)return'YouTube';if(h.indexOf('twitch')>=0)return'Twitch';return h}catch(e){return'origen'}}
+function ytId(u){try{var x=new URL(u);if(x.hostname.indexOf('youtu.be')>=0)return x.pathname.slice(1);if(x.searchParams.get('v'))return x.searchParams.get('v');var m=x.pathname.match(/\/(?:shorts|embed)\/([^/]+)/);return m?m[1]:null}catch(e){return null}}
+function dur(c){return Math.max(.1,(+c.end||0)-(+c.start||0))}
+function total(){return project.clips.reduce(function(a,c){return a+dur(c)},0)}
+function media(c){return project.media.find(function(m){return m.id===c.mediaId})||{url:c.sourceUrl,title:source(c.sourceUrl)}}
+function normalize(p){p=p||{};var old=Array.isArray(p.segments)?p.segments:[],clips=Array.isArray(p.clips)?p.clips.map(function(c){return Object.assign({},c,{id:c.id||uid('clip')})}):old.map(function(s){return{id:uid('clip'),sourceUrl:s.sourceUrl||s.source_url||'',start:+s.start||0,end:+s.end||.1,zoom:s.zoom||null,transition:s.transition||null}});
+var mediaList=Array.isArray(p.media)?p.media.slice():[],ids={};clips.forEach(function(c){var u=c.sourceUrl||'';ids[u]=ids[u]||uid('media');c.mediaId=c.mediaId||ids[u];if(!mediaList.some(function(m){return m.id===c.mediaId}))mediaList.push({id:c.mediaId,url:u,title:source(u)})});
+return{id:p.id||uid('project'),name:p.name||'Proyecto YTDL Clipper',media:mediaList,clips:clips,output:p.output||{aspect_ratio:'9:16'},tracks:p.tracks||{video:['main'],text:[],audio:[]}}}
+function enc(v){var a=new TextEncoder().encode(JSON.stringify(v)),s='';for(var i=0;i<a.length;i+=32768)s+=String.fromCharCode.apply(null,a.subarray(i,i+32768));return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
+function dec(){try{var s=location.hash.slice(1);if(!s)return null;s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';var b=atob(s),a=Uint8Array.from(b,function(c){return c.charCodeAt(0)});return JSON.parse(new TextDecoder().decode(a))}catch(e){return null}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(project));location.hash=enc(project)}catch(e){}}
+function commit(){history.push(clone(project));if(history.length>50)history.shift();future=[];save();render()}
+function current(){return project.clips.find(function(c){return c.id===selectedId})||null}
+function toast(t){var e=document.getElementById('toast');e.textContent=t;e.className='show';clearTimeout(toast.t);toast.t=setTimeout(function(){e.className=''},1800)}
+function render(){
+renderMedia();renderClips();renderTimeline();renderInspector();renderPreview();clock();document.getElementById('summary').textContent=project.clips.length+' clips · '+fmt(total());
 }
-function encodeHash(v){return btoa(unescape(encodeURIComponent(JSON.stringify(v)))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
-function clone(v){return JSON.parse(JSON.stringify(v))}
-function sourceLabel(url){try{let u=new URL(url);if(u.hostname.includes('youtube'))return 'YouTube';if(u.hostname.includes('twitch'))return 'Twitch';return u.hostname}catch(e){return 'origen'}}
-function fmt(n){n=Math.max(0,Math.floor(n));let m=Math.floor(n/60),s=n%60;return m+':'+String(s).padStart(2,'0')}
-function total(){return project.segments.reduce((a,s)=>a+Math.max(0,(+s.end||0)-(+s.start||0)),0)}
-function commit(){history.push(clone(project));if(history.length>40)history.shift();future=[];saveLocal();render()}
-function saveLocal(){try{localStorage.setItem(KEY,JSON.stringify(project));location.hash=encodeHash(project)}catch(e){}}
-function load(){
-  const hashProject=decodeHash();
-  let p=hashProject;
-  if(!p){
-    try{p=JSON.parse(localStorage.getItem(KEY)||'null')}catch(e){}
-  }
-  if(p&&Array.isArray(p.segments)){
-    project=p;
-  }else if(location.hash){
-    document.getElementById('stageMeta').textContent='No se pudo cargar el proyecto recibido.';
-  }
-  render();
+function renderMedia(){var e=document.getElementById('media');e.innerHTML='';project.media.forEach(function(m){var d=document.createElement('div');d.className='card';var id=ytId(m.url);d.innerHTML=(id?'<img src="https://i.ytimg.com/vi/'+encodeURIComponent(id)+'/hqdefault.jpg">':'')+'<b>'+esc(m.title||source(m.url))+'</b><small>'+source(m.url)+' · '+project.clips.filter(function(c){return c.mediaId===m.id}).length+' clips</small>';d.onclick=function(){var c=project.clips.find(function(x){return x.mediaId===m.id});if(c){selectedId=c.id;render()}};e.appendChild(d)})}
+function renderClips(){var e=document.getElementById('clips');e.innerHTML='';project.clips.forEach(function(c,i){var d=document.createElement('div');d.className='card '+(c.id===selectedId?'sel':'');d.draggable=true;d.innerHTML='<b>Clip '+(i+1)+'</b><small>'+fmt(c.start)+' → '+fmt(c.end)+' · '+fmt(dur(c))+'</small><em>'+source(media(c).url)+'</em>';d.onclick=function(){selectedId=c.id;playTime=0;render()};d.ondragstart=function(x){x.dataTransfer.setData('clip',c.id)};e.appendChild(d)})}
+function renderTimeline(){var e=document.getElementById('tlclips');e.innerHTML='';project.clips.forEach(function(c,i){var d=document.createElement('div');d.className='tlclip '+(c.id===selectedId?'sel':'');d.style.width=Math.max(36,dur(c)*PX)+'px';d.textContent=(i+1)+' · '+fmt(dur(c));d.draggable=true;d.onclick=function(){selectedId=c.id;render()};d.ondragstart=function(x){x.dataTransfer.setData('clip',c.id)};d.ondragover=function(x){x.preventDefault()};d.ondrop=function(x){x.preventDefault();var id=x.dataTransfer.getData('clip'),from=project.clips.findIndex(function(q){return q.id===id});if(from<0||from===i)return;var c2=project.clips.splice(from,1)[0];project.clips.splice(i,0,c2);selectedId=c2.id;commit()};e.appendChild(d)});var r=document.getElementById('ruler');r.style.width=Math.max(800,(total()+10)*PX)+'px';r.innerHTML='';for(var s=0;s<=total()+10;s+=5){var t=document.createElement('span');t.style.left=s*PX+'px';t.textContent=fmt(s);r.appendChild(t)}}
+function renderInspector(){var e=document.getElementById('inspector'),c=current();if(!c){e.innerHTML='<p>Selecciona un clip.</p>';return}var m=media(c);e.innerHTML='<small>'+esc(m.title||source(m.url))+'</small><label>Inicio<input id="st" type="number" step=".1" value="'+c.start+'"></label><label>Fin<input id="en" type="number" step=".1" value="'+c.end+'"></label><label>Zoom<select id="zoom"><option value="0">Sin zoom</option><option value="1.15">1.15×</option><option value="1.3">1.30×</option><option value="1.5">1.50×</option><option value="2">2×</option></select></label><label class="check"><input id="kb" type="checkbox"> Ken Burns</label><label>Transición<select id="tr"><option value="none">Ninguna</option><option value="fade">Fade</option><option value="dissolve">Dissolve</option><option value="wipe">Wipe</option></select></label><label>Duración<input id="td" type="number" min=".2" max="3" step=".1" value="'+(c.transition&&c.transition.duration||.5)+'"></label><hr><b>PROYECTO</b><label>Formato<select id="aspect"><option>9:16</option><option>16:9</option><option>1:1</option><option>original</option></select></label><label>Título<input id="title" value="'+esc(project.output.title&&project.output.title.text||'')+'"></label><label>Posición<select id="titlepos"><option value="top">Arriba</option><option value="center">Centro</option><option value="bottom">Abajo</option></select></label><label>Marca de agua<input id="wm" value="'+esc(project.output.watermark&&project.output.watermark.text||'')+'"></label><label class="check"><input id="norm" type="checkbox"> Normalizar audio</label><button id="delete" class="danger wide">Eliminar clip</button>';
+document.getElementById('zoom').value=c.zoom&&c.zoom.factor?String(c.zoom.factor):'0';document.getElementById('kb').checked=!!(c.zoom&&c.zoom.kenburns);document.getElementById('tr').value=c.transition&&c.transition.type||'none';document.getElementById('aspect').value=project.output.aspect_ratio||'9:16';document.getElementById('titlepos').value=project.output.title&&project.output.title.position||'bottom';document.getElementById('norm').checked=!!project.output.normalize_audio;
+function apply(){c.start=Math.max(0,+document.getElementById('st').value||0);c.end=Math.max(c.start+.1,+document.getElementById('en').value||c.start+.1);var z=+document.getElementById('zoom').value;c.zoom=z?{factor:z,kenburns:document.getElementById('kb').checked}:null;var tr=document.getElementById('tr').value;c.transition=tr==='none'?null:{type:tr,duration:+document.getElementById('td').value||.5};project.output.aspect_ratio=document.getElementById('aspect').value;var title=document.getElementById('title').value.trim();project.output.title=title?{text:title,position:document.getElementById('titlepos').value,duration:'start'}:null;var wm=document.getElementById('wm').value.trim();project.output.watermark=wm?{text:wm,position:'bottom'}:null;project.output.normalize_audio=document.getElementById('norm').checked;commit()}
+['st','en','zoom','kb','tr','td','aspect','title','titlepos','wm','norm'].forEach(function(id){document.getElementById(id).addEventListener('change',apply)});
+document.getElementById('delete').onclick=function(){var i=project.clips.findIndex(function(x){return x.id===c.id});project.clips.splice(i,1);selectedId=project.clips[Math.max(0,i-1)]?.id||null;commit()}
 }
-function render(){renderMedia();renderTimeline();renderInspector();document.getElementById('summary').textContent=project.segments.length+' trozos · '+fmt(total());document.getElementById('time').textContent=fmt(playTime)+' / '+fmt(total());}
-function renderMedia(){let el=document.getElementById('media');if(!project.segments.length){el.innerHTML='<div class="empty">No hay trozos.</div>';return}el.innerHTML=project.segments.map((s,i)=>'<div class="asset '+(i===selected?'selected':'')+'" data-i="'+i+'"><b>Trozo '+(i+1)+'</b><span>'+fmt(s.start)+' → '+fmt(s.end)+' · '+fmt(s.end-s.start)+'</span><span>'+sourceLabel(s.sourceUrl||'')+'</span></div>').join('');el.querySelectorAll('.asset').forEach(x=>x.onclick=()=>{selected=+x.dataset.i;render()})}
-function renderTimeline(){let clips=document.getElementById('clips');clips.innerHTML='';project.segments.forEach((s,i)=>{let d=document.createElement('div');d.className='clip '+(i===selected?'selected':'');d.draggable=true;d.dataset.i=i;d.style.width=Math.max(120,(s.end-s.start)*10)+'px';d.innerHTML='<span class="num">'+(i+1)+'</span><button class="x">×</button><span class="dur">'+fmt(s.end-s.start)+'</span><span class="src">'+sourceLabel(s.sourceUrl||'')+'</span>';d.onclick=e=>{if(e.target.classList.contains('x'))return;selected=i;render()};d.querySelector('.x').onclick=e=>{e.stopPropagation();project.segments.splice(i,1);selected=Math.min(selected,project.segments.length-1);commit()};d.ondragstart=e=>e.dataTransfer.setData('text/plain',String(i));d.ondragover=e=>e.preventDefault();d.ondrop=e=>{e.preventDefault();let from=+e.dataTransfer.getData('text/plain'),to=i;if(from===to)return;let a=project.segments.splice(from,1)[0];project.segments.splice(to,0,a);selected=to;commit()};clips.appendChild(d)});let r=document.getElementById('ruler');r.innerHTML='';for(let i=0;i<=Math.ceil(total());i+=5){let t=document.createElement('span');t.className='tick';t.style.left=(i*10)+'px';t.textContent=fmt(i);r.appendChild(t)}document.getElementById('playhead').style.left=(14+playTime*10)+'px'}
-function renderInspector(){let el=document.getElementById('inspector');let s=project.segments[selected];if(!s){el.innerHTML='<div class="empty">Selecciona un trozo.</div>';return}el.innerHTML='<div class="hint">Trozo '+(selected+1)+' · '+sourceLabel(s.sourceUrl||'')+'</div><label>Inicio (s)<input id="start" type="number" step=".1" min="0" value="'+s.start+'"></label><label>Fin (s)<input id="end" type="number" step=".1" min="0" value="'+s.end+'"></label><label>Zoom<select id="zoom"><option value="none">Sin zoom</option><option value="1.15">1.15×</option><option value="1.3">1.30×</option><option value="1.5">1.50×</option><option value="2">2×</option></select></label><label class="check"><input id="kenburns" type="checkbox"> Movimiento suave</label><label>Transición<select id="transition"><option value="none">Ninguna</option><option value="fade">Fade</option><option value="dissolve">Dissolve</option><option value="wipe">Wipe</option></select></label><label>Duración transición<input id="tdur" type="number" step=".1" min=".2" max="3" value="'+(s.transitionDuration||.5)+'"></label><hr style="border:0;border-top:1px solid var(--line);margin:16px 0"><div class="section-title">Proyecto</div><label>Formato<select id="aspect"><option>9:16</option><option>16:9</option><option>1:1</option><option>original</option></select></label><label>Título<input id="title" maxlength="80" placeholder="Gancho o título"></label><label>Posición título<select id="titlePos"><option value="top">Arriba</option><option value="center">Centro</option><option value="bottom">Abajo</option></select></label><label>Marca de agua<input id="watermark" maxlength="40" placeholder="Opcional"></label><label>Posición marca<select id="watermarkPos"><option value="top">Arriba</option><option value="center">Centro</option><option value="bottom">Abajo</option></select></label><label class="check"><input id="normalize" type="checkbox"> Normalizar audio</label>';
-document.getElementById('zoom').value=s.zoomEnabled?String(s.zoomFactor):'none';document.getElementById('kenburns').checked=!!s.kenburns;document.getElementById('transition').value=s.transitionType||'none';document.getElementById('aspect').value=project.output.aspect_ratio||'9:16';document.getElementById('title').value=project.output.title?.text||'';document.getElementById('titlePos').value=project.output.title?.position||'bottom';document.getElementById('watermark').value=project.output.watermark?.text||'';document.getElementById('watermarkPos').value=project.output.watermark?.position||'bottom';document.getElementById('normalize').checked=!!project.output.normalize_audio;['start','end','zoom','kenburns','transition','tdur'].forEach(id=>document.getElementById(id).addEventListener('change',()=>{let n={...s};n.start=+document.getElementById('start').value;n.end=Math.max(n.start+.1,+document.getElementById('end').value);let z=document.getElementById('zoom').value;n.zoomEnabled=z!=='none';n.zoomFactor=z==='none'?1:+z;n.kenburns=document.getElementById('kenburns').checked;n.transitionType=document.getElementById('transition').value;n.transitionDuration=+document.getElementById('tdur').value;project.segments[selected]=n;commit()}));['aspect','title','titlePos','watermark','watermarkPos','normalize'].forEach(id=>document.getElementById(id).addEventListener('change',()=>{project.output.aspect_ratio=document.getElementById('aspect').value;let t=document.getElementById('title').value.trim();project.output.title=t?{text:t,position:document.getElementById('titlePos').value,duration:'start'}:null;let w=document.getElementById('watermark').value.trim();project.output.watermark=w?{text:w,position:document.getElementById('watermarkPos').value}:null;project.output.normalize_audio=document.getElementById('normalize').checked;commit()}))}
-function readOutput(){let o=project.output||{};return {...o,aspect_ratio:o.aspect_ratio||'9:16',title:o.title&&o.title.text?o.title:null,watermark:o.watermark&&o.watermark.text?o.watermark:null,badge:o.badge&&o.badge.text?o.badge:null}}
-function exportClip(){if(!project.segments.length)return alert('No hay trozos para exportar.');let output=readOutput();let payload={url:project.segments[0].sourceUrl||'',segments:project.segments.map(s=>({source_url:s.sourceUrl,start:s.start,end:s.end,zoom:s.zoomEnabled?{factor:s.zoomFactor,kenburns:!!s.kenburns}:null,transition:s.transitionType&&s.transitionType!=='none'?{type:s.transitionType,duration:s.transitionDuration||.5}:null})),output};if(window.opener&&!window.opener.closed){window.opener.postMessage({type:'ytdl-editor-export',payload},'*');document.getElementById('export').textContent='Enviado al capturador ✓';setTimeout(()=>document.getElementById('export').textContent='Exportar clip',1500)}else alert('Abre el editor desde el capturador para exportar.')}
-document.getElementById('export').onclick=exportClip;document.getElementById('save').onclick=()=>{saveLocal();alert('Proyecto guardado en este navegador.')};document.getElementById('undo').onclick=()=>{if(history.length){future.push(clone(project));project=history.pop();render()}};document.getElementById('redo').onclick=()=>{if(future.length){history.push(clone(project));project=future.pop();render()}};document.getElementById('new').onclick=()=>{if(confirm('¿Crear un proyecto vacío?')){history.push(clone(project));project={id:'project-'+Date.now(),name:'Proyecto nuevo',segments:[],output:{aspect_ratio:'9:16'}};selected=0;saveLocal();render()}};function updatePlaybackUI(){
-  document.getElementById('time').textContent=fmt(playTime)+' / '+fmt(total());
-  document.getElementById('playhead').style.left=(14+playTime*10)+'px';
-}
-document.getElementById('play').onclick=()=>{
-  playing=!playing;
-  document.getElementById('play').textContent=playing?'❚❚':'▶';
-  if(playing){
-    clearInterval(playTimer);
-    playTimer=setInterval(()=>{
-      playTime+=.1;
-      if(playTime>=total()){playTime=0}
-      updatePlaybackUI();
-    },100);
-  }else{
-    clearInterval(playTimer);
-  }
-};document.getElementById('back').onclick=()=>{playTime=Math.max(0,playTime-5);updatePlaybackUI()};document.getElementById('forward').onclick=()=>{playTime=Math.min(total(),playTime+5);updatePlaybackUI()};window.addEventListener('beforeunload',saveLocal);load();
+function embed(u,start){var n=source(u);if(n==='YouTube'){var id=ytId(u);return id?'https://www.youtube.com/embed/'+encodeURIComponent(id)+'?controls=1&playsinline=1&rel=0&start='+Math.floor(start):null}if(n==='Twitch'){try{var x=new URL(u),v=x.pathname.match(/\/videos\/(\d+)/);if(v)return'https://player.twitch.tv/?video='+v[1]+'&parent='+location.hostname;var ch=x.pathname.split('/').filter(Boolean)[0];if(ch)return'https://player.twitch.tv/?channel='+encodeURIComponent(ch)+'&parent='+location.hostname}catch(e){}}return null}
+function renderPreview(){var e=document.getElementById('stage'),c=current();if(!c){e.innerHTML='<div class="empty">Selecciona un clip</div>';return}var u=embed(media(c).url,c.start);e.innerHTML='';if(u){var f=document.createElement('iframe');f.src=u;f.allow='autoplay;fullscreen;picture-in-picture';f.allowFullscreen=true;e.appendChild(f)}else e.innerHTML='<div class="empty">Este origen no admite preview incrustado.<br><a target="_blank" rel="noopener" href="'+esc(media(c).url)+'">Abrir fuente</a><p>El render definitivo usa yt-dlp.</p></div>'}
+function clock(){document.getElementById('clock').textContent=fmt(playTime)+' / '+fmt(total());document.getElementById('head').style.left=(12+playTime*PX)+'px'}
+function exportProject(){if(!project.clips.length){toast('No hay clips');return}var payload={url:project.clips[0].sourceUrl||media(project.clips[0]).url,segments:project.clips.map(function(c){return{source_url:c.sourceUrl||media(c).url,start:+c.start,end:+c.end,zoom:c.zoom||null,transition:c.transition||null}}),output:project.output||{}};if(window.opener&&!window.opener.closed){window.opener.postMessage({type:'ytdl-editor-export',payload:payload},'*');toast('Proyecto enviado al capturador')}else{try{navigator.clipboard.writeText(JSON.stringify(payload));toast('Payload copiado')}catch(e){alert('Abre el editor desde el capturador')}}}
+document.getElementById('play').onclick=function(){playing=!playing;this.textContent=playing?'❚❚':'▶';if(playing){clearInterval(timer);timer=setInterval(function(){playTime+=.1;if(playTime>=total()){playTime=0;playing=false;clearInterval(timer);document.getElementById('play').textContent='▶'}clock()},100)}else clearInterval(timer)};
+document.getElementById('back').onclick=function(){playTime=Math.max(0,playTime-5);clock()};document.getElementById('forward').onclick=function(){playTime=Math.min(total(),playTime+5);clock()};
+document.getElementById('split').onclick=function(){var c=current();if(!c)return;var abs=c.start+playTime;if(abs<=c.start+.1||abs>=c.end-.1){toast('El cursor debe estar dentro del clip');return}var b=clone(c);b.id=uid('clip');b.start=abs;c.end=abs;var i=project.clips.findIndex(function(x){return x.id===c.id});project.clips.splice(i+1,0,b);selectedId=b.id;commit()};
+document.getElementById('undo').onclick=function(){if(!history.length)return;future.push(clone(project));project=history.pop();selectedId=project.clips[0]?.id||null;save();render()};document.getElementById('redo').onclick=function(){if(!future.length)return;history.push(clone(project));project=future.pop();selectedId=project.clips[0]?.id||null;save();render()};document.getElementById('new').onclick=function(){if(confirm('¿Crear un proyecto vacío?')){history.push(clone(project));project=normalize({});selectedId=null;save();render()}};document.getElementById('save').onclick=function(){save();toast('Proyecto guardado')};document.getElementById('export').onclick=exportProject;
+window.addEventListener('beforeunload',function(){clearInterval(timer);save()});project=normalize(dec()||JSON.parse(localStorage.getItem(KEY)||'null')||{});selectedId=project.clips[0]?.id||null;render();
 })();
 </script>
-</body>
-</html>
+</body></html>
