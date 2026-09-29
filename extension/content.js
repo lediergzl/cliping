@@ -1608,7 +1608,7 @@
         // mediante location.hash para que editor.html lo cargue al iniciar.
         const encodedProject = encodeEditorProject(project);
         const editorUrl =
-            CONFIG.WORKER_URL.replace(/\\/$/, '') + '/editor#' + encodedProject;
+            CONFIG.WORKER_URL.replace(/\/$/, '') + '/editor#' + encodedProject;
 
         const win = window.open(editorUrl, '_blank');
         if (!win) {
