@@ -21,13 +21,15 @@ jobs:
       - name: Validar manifest
         run: node -e "JSON.parse(require('fs').readFileSync('extension/manifest.json','utf8')); console.log('manifest.json válido')"
 
-      - name: Empaquetar extensión
+      - name: Generar ZIP dentro de extension
         run: |
+          rm -f extension/ytdl-clipper-extension.zip
           mkdir -p dist
           cd extension
-          zip -r ../dist/ytdl-clipper-extension.zip . -x '*.DS_Store'
+          zip -r ../dist/ytdl-clipper-extension.zip . -x '*.DS_Store' 'ytdl-clipper-extension.zip'
           cd ..
-          sha256sum dist/ytdl-clipper-extension.zip > dist/ytdl-clipper-extension.sha256
+          cp dist/ytdl-clipper-extension.zip extension/ytdl-clipper-extension.zip
+          sha256sum extension/ytdl-clipper-extension.zip > dist/ytdl-clipper-extension.sha256
 
       - name: Publicar artefacto
         uses: actions/upload-artifact@v4
@@ -36,13 +38,23 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+      - name: Guardar ZIP en el repositorio
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add extension/ytdl-clipper-extension.zip
+          if git diff --cached --quiet; then
+            echo "El ZIP no cambió"
+          else
+            git commit -m "chore: actualizar ZIP de la extensión [skip ci]"
+            git push
+          fi
+
       - name: Publicar Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="extension-v1.0.0-build-${{ github.run_number }}"
-          gh release create "$TAG" \
-            dist/ytdl-clipper-extension.zip \
-            dist/ytdl-clipper-extension.sha256 \
-            --title "YTDL Clipper Extension ${TAG}" \
-            --generate-notes
+          gh release create "$TAG"             dist/ytdl-clipper-extension.zip             dist/ytdl-clipper-extension.sha256             --title "YTDL Clipper Extension ${TAG}"             --generate-notes
