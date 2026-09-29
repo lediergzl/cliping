@@ -264,7 +264,7 @@ def has_effects(payload: dict) -> bool:
     if out.get("title") or out.get("watermark") or out.get("badge"):
         return True
     for seg in payload.get("segments", []):
-        if seg.get("zoom"):
+        if seg.get("zoom") or seg.get("transform"):
             return True
         tr = seg.get("transition")
         if tr and tr.get("type") not in (None, "none"):
@@ -272,7 +272,7 @@ def has_effects(payload: dict) -> bool:
     return False
 
 
-def build_segment_filter(aspect, canvas, zoom, watermark, title, badge, subtitles_ass,
+def build_segment_filter(aspect, canvas, zoom, transform, watermark, title, badge, subtitles_ass,
                           fade_in, fade_out, is_first, is_last, src_w, src_h, seg_dur):
     w, h = canvas if canvas else (src_w, src_h)
     steps = []
@@ -323,6 +323,26 @@ def build_segment_filter(aspect, canvas, zoom, watermark, title, badge, subtitle
     else:
         steps.append(f"{cur}fps={FPS}[vzoom]")
         cur = "[vzoom]"
+
+    # Transformaciones por clip procedentes del editor.
+    # Los límites ya fueron validados por el Worker; se vuelven a acotar aquí
+    # porque el script también puede ejecutarse con payloads internos.
+    if transform:
+        scale = min(max(float(transform.get("scale", 1) or 1), 0.25), 4.0)
+        rotation = min(max(float(transform.get("rotation", 0) or 0), -180), 180)
+        x = min(max(float(transform.get("x", 0) or 0), -100), 100)
+        y = min(max(float(transform.get("y", 0) or 0), -100), 100)
+        if abs(scale - 1.0) > 0.001:
+            steps.append(
+                f"{cur}scale=iw*{scale}:ih*{scale},"
+                f"crop={w}:{h}:(iw-{w})/2-({x}*{w}/100):"
+                f"(ih-{h})/2-({y}*{h}/100)[vtransform]"
+            )
+            cur = "[vtransform]"
+        if abs(rotation) > 0.01:
+            radians = rotation * 3.141592653589793 / 180.0
+            steps.append(f"{cur}rotate={radians}:fillcolor=black[vrotate]")
+            cur = "[vrotate]"
 
     if watermark and watermark.get("text"):
         y = y_expr(watermark.get("position", "bottom"))
@@ -402,7 +422,7 @@ def process_segment(src, dst, payload_output, seg_effects, subtitles_ass, is_fir
     seg_dur = duration_of(src)
 
     vfilter, w, h = build_segment_filter(
-        aspect, canvas, seg_effects.get("zoom"),
+        aspect, canvas, seg_effects.get("zoom"), seg_effects.get("transform"),
         payload_output.get("watermark"), payload_output.get("title"), payload_output.get("badge"),
         subtitles_ass,
         float(payload_output.get("fade_in") or 0), float(payload_output.get("fade_out") or 0),
