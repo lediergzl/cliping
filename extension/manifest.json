@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "YTDL Clipper",
+  "version": "1.0.0",
+  "description": "Marca trozos de YouTube y Twitch, aplica efectos y exporta clips con YTDL Clipper.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://www.twitch.tv/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://www.twitch.tv/*",
+    "https://ytdl-clipper-worker.yode86.workers.dev/*"
+  ],
+  "action": {
+    "default_title": "YTDL Clipper"
+  }
+}
