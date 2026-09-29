@@ -333,9 +333,22 @@ def build_segment_filter(aspect, canvas, zoom, transform, watermark, title, badg
         x = min(max(float(transform.get("x", 0) or 0), -100), 100)
         y = min(max(float(transform.get("y", 0) or 0), -100), 100)
         if abs(scale - 1.0) > 0.001:
+            if scale >= 1.0:
+                steps.append(
+                    f"{cur}scale=iw*{scale}:ih*{scale},"
+                    f"crop={w}:{h}:(iw-{w})/2-({x}*{w}/100):"
+                    f"(ih-{h})/2-({y}*{h}/100)[vtransform]"
+                )
+            else:
+                steps.append(
+                    f"{cur}scale=iw*{scale}:ih*{scale},"
+                    f"pad={w}:{h}:(ow-iw)/2+({x}*{w}/100):"
+                    f"(oh-ih)/2+({y}*{h}/100):color=black[vtransform]"
+                )
+            cur = "[vtransform]"
+        elif abs(x) > 0.001 or abs(y) > 0.001:
             steps.append(
-                f"{cur}scale=iw*{scale}:ih*{scale},"
-                f"crop={w}:{h}:(iw-{w})/2-({x}*{w}/100):"
+                f"{cur}crop={w}:{h}:(iw-{w})/2-({x}*{w}/100):"
                 f"(ih-{h})/2-({y}*{h}/100)[vtransform]"
             )
             cur = "[vtransform]"
