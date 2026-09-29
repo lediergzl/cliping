@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package:
@@ -35,3 +35,14 @@ jobs:
           name: ytdl-clipper-extension
           path: dist/
           if-no-files-found: error
+
+      - name: Publicar Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="extension-v1.0.0-build-${{ github.run_number }}"
+          gh release create "$TAG" \\
+            dist/ytdl-clipper-extension.zip \\
+            dist/ytdl-clipper-extension.sha256 \\
+            --title "YTDL Clipper Extension ${TAG}" \\
+            --generate-notes
