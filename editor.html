@@ -72,7 +72,25 @@ document.getElementById('play').onclick=function(){playing=!playing;this.textCon
 document.getElementById('back').onclick=function(){playTime=Math.max(0,playTime-5);var a=clipAtTime(playTime);if(a)selectedId=a.c.id;renderPreview();clock()};document.getElementById('forward').onclick=function(){playTime=Math.min(total(),playTime+5);var a=clipAtTime(playTime);if(a)selectedId=a.c.id;renderPreview();clock()};
 document.getElementById('split').onclick=function(){var c=current();if(!c)return;var a=clipAtTime(playTime);if(!a||a.c.id!==c.id){toast('El cursor debe estar dentro del clip seleccionado');return}var abs=c.start+a.local;if(abs<=c.start+.1||abs>=c.end-.1){toast('El cursor debe estar dentro del clip');return}var b=clone(c);b.id=uid('clip');b.start=abs;c.end=abs;var i=project.clips.findIndex(function(x){return x.id===c.id});project.clips.splice(i+1,0,b);selectedId=b.id;commit()};
 document.getElementById('undo').onclick=function(){if(!history.length)return;future.push(clone(project));project=history.pop();selectedId=project.clips[0]?.id||null;selectedIds=[];save();render()};document.getElementById('redo').onclick=function(){if(!future.length)return;history.push(clone(project));project=future.pop();selectedId=project.clips[0]?.id||null;selectedIds=[];save();render()};document.getElementById('new').onclick=function(){if(confirm('¿Crear un proyecto vacío?')){history.push(clone(project));project=normalize({});selectedId=null;save();render()}};document.getElementById('save').onclick=function(){save();toast('Proyecto guardado')};document.getElementById('export').onclick=exportProject;
-window.addEventListener('beforeunload',function(){clearInterval(timer);save()});project=normalize(dec()||JSON.parse(localStorage.getItem(KEY)||'null')||{});project.clips.forEach(function(c){c.transform=c.transform||{x:0,y:0,scale:1,rotation:0,fit:'cover'}});selectedId=project.clips[0]?.id||null;selectedIds=[];render();bindTimelineControls();
+window.addEventListener('beforeunload',function(){clearInterval(timer);save()});window.addEventListener('message',function(ev){
+  try{
+    if(ev.origin!==location.origin)return;
+    var data=ev.data;
+    if(!data||data.type!=='ytdl-editor-project'||!data.project)return;
+    project=normalize(data.project);
+    selectedId=project.clips[0]?.id||null;
+    selectedIds=[];
+    playTime=0;
+    save();
+    render();
+    try{ev.source.postMessage({type:'ytdl-editor-ready',clips:project.clips.length,media:project.media.length},ev.origin)}catch(e){}
+  }catch(err){
+    console.error('YTDL editor: no se pudo recibir el proyecto',err);
+  }
+});
+project=normalize(dec()||JSON.parse(localStorage.getItem(KEY)||'null')||{});
+project.clips.forEach(function(c){c.transform=c.transform||{x:0,y:0,scale:1,rotation:0,fit:'cover'}});
+selectedId=project.clips[0]?.id||null;selectedIds=[];render();bindTimelineControls();
 })();
 </script>
 </body></html>
