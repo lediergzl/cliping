@@ -117,7 +117,16 @@ function sanitizeOutput(out: any) {
     badge: null,
     subtitles,
     audio: sanitizeAudio(o.audio),
+    sound_effects: [],
   };
+  if (Array.isArray(o.sound_effects)) {
+    result.sound_effects = o.sound_effects.slice(0, 100).map((x: any) => ({
+      effect: ["whoosh", "soft_hit", "click", "shimmer"].includes(x?.effect) ? x.effect : "whoosh",
+      start: clamp(Number(x?.start) || 0, 0, 86400),
+      duration: clamp(Number(x?.duration) || 0.12, 0.03, 5),
+      volume: clamp(Number(x?.volume) || 0.12, 0, 0.5),
+    }));
+  }
   if (o.title?.text && typeof o.title.text === "string") {
     result.title = {
       text: o.title.text.slice(0, 80),
@@ -140,6 +149,7 @@ function sanitizeOutput(out: any) {
 function sanitizeTracks(tracks: any) {
   const text = Array.isArray(tracks?.text) ? tracks.text.slice(0, 100) : [];
   const audio = Array.isArray(tracks?.audio) ? tracks.audio.slice(0, 50) : [];
+  const sfx = Array.isArray(tracks?.sfx) ? tracks.sfx.slice(0, 100) : [];
   return {
     video: ["main"],
     text: text.map((x: any) => ({
@@ -170,6 +180,15 @@ function sanitizeTracks(tracks: any) {
       fade_out: Math.max(0, Math.min(Number(x?.fadeOut) || 0, 10)),
       name: typeof x?.name === "string" ? x.name.slice(0, 120) : "Audio",
     })).filter((x: any) => x.end > x.start && (x.source_url || x.path)),
+    sfx: sfx.map((x: any) => ({
+      id: typeof x?.id === "string" ? x.id.slice(0, 80) : undefined,
+      type: "sfx",
+      effect: ["whoosh", "soft_hit", "click", "shimmer"].includes(x?.effect) ? x.effect : "whoosh",
+      start: Math.max(0, Math.min(Number(x?.start) || 0, 86400)),
+      duration: Math.max(0.03, Math.min(Number(x?.duration) || 0.12, 5)),
+      volume: Math.max(0, Math.min(Number(x?.volume) || 0.12, 0.5)),
+      name: typeof x?.name === "string" ? x.name.slice(0, 120) : "SFX",
+    })).filter((x: any) => x.start >= 0),
   };
 }
 
@@ -188,6 +207,15 @@ function sanitizeSegmentEffects(s: any) {
     const factor = Math.min(Math.max(Number(s.zoom.factor) || 1, 1), 3);
     if (factor > 1) extra.zoom = { factor, kenburns: !!s.zoom.kenburns };
   }
+  if (s?.speed != null) {
+    const speed = clamp(Number(s.speed) || 1, 0.5, 2);
+    if (Math.abs(speed - 1) > 0.001) extra.speed = speed;
+  }
+  extra.mirror = s?.mirror === true;
+  const filters = new Set(["none", "warm", "cool", "cinematic", "soft", "mono", "vintage"]);
+  if (typeof s?.color_filter === "string" && filters.has(s.color_filter)) extra.color_filter = s.color_filter;
+  extra.clean_silence = s?.clean_silence === true;
+
   if (s?.transition?.type && TRANSITIONS.has(s.transition.type) && s.transition.type !== "none") {
     extra.transition = {
       type: s.transition.type,
