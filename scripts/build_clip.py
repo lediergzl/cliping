@@ -807,7 +807,9 @@ def main():
             cfg = segments_cfg[i] if i < len(segments_cfg) else {}
             if cfg.get("clean_silence"):
                 dst = clips_dir / f"clean_{i:03d}.mp4"
-                clean_silences(src, dst, -38.0, 0.65)
+                level = str(cfg.get("clean_silence_level") or "gentle")
+                min_silence = 0.35 if level == "micro" else 0.65
+                clean_silences(src, dst, -38.0, min_silence)
                 cleaned.append(dst)
             else:
                 cleaned.append(src)
@@ -892,6 +894,9 @@ def main():
                 src, dst, output_cfg, seg_effects, subtitle_files.get(i),
                 i == 0, i == len(raw_clips) - 1,
                 common_canvas, text_layers, project_start,
+                speed_factor(seg_effects),
+                bool(seg_effects.get("mirror")),
+                str(seg_effects.get("color_filter") or "none"),
             )
             proc_files.append(dst)
             project_start += timeline_dur
