@@ -250,6 +250,112 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     print(f"Subtítulos: {len(words)} palabras → {ass_path.name}", flush=True)
 
 
+def speed_factor(seg_effects: dict) -> float:
+    try:
+        return min(max(float(seg_effects.get("speed", 1) or 1), 0.5), 2.0)
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def clean_silences(src: Path, dst: Path, threshold: float = -38.0, min_silence: float = 0.65):
+    """Elimina silencios largos manteniendo vídeo y audio sincronizados."""
+    probe_cmd = [
+        "ffmpeg", "-hide_banner", "-i", str(src),
+        "-af", f"silencedetect=noise={threshold}dB:d={min_silence}",
+        "-f", "null", "-"
+    ]
+    p = subprocess.run(probe_cmd, capture_output=True, text=True)
+    log = (p.stderr or "") + "\n" + (p.stdout or "")
+    starts = [float(x) for x in re.findall(r"silence_start:\s*([0-9.]+)", log)]
+    ends = [float(x) for x in re.findall(r"silence_end:\s*([0-9.]+)", log)]
+    dur = video_duration(src)
+    if not starts:
+        sh(["ffmpeg", "-y", "-i", str(src), "-c", "copy", str(dst)])
+        return dur
+
+    intervals = []
+    cursor = 0.0
+    for i, st in enumerate(starts):
+        en = ends[i] if i < len(ends) else dur
+        st = max(cursor, min(st, dur))
+        en = max(st, min(en, dur))
+        if st - cursor >= 0.08:
+            intervals.append((cursor, st))
+        cursor = max(cursor, en)
+    if dur - cursor >= 0.08:
+        intervals.append((cursor, dur))
+    if not intervals:
+        intervals = [(0.0, dur)]
+
+    parts = []
+    for i, (a, b) in enumerate(intervals):
+        parts.append(
+            f"[0:v]trim=start={a:.4f}:end={b:.4f},setpts=PTS-STARTPTS[v{i}];"
+            f"[0:a]atrim=start={a:.4f}:end={b:.4f},asetpts=PTS-STARTPTS[a{i}]"
+        )
+    concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(intervals)))
+    parts.append(f"{concat_inputs}concat=n={len(intervals)}:v=1:a=1[v][a]")
+    sh([
+        "ffmpeg", "-y", "-i", str(src),
+        "-filter_complex", ";".join(parts),
+        "-map", "[v]", "-map", "[a]",
+        *ENC_V, *ENC_A, *FASTSTART, str(dst),
+    ])
+    return sum(b - a for a, b in intervals)
+
+
+def sfx_lavfi(effect: str, duration: float) -> str:
+    d = max(0.03, duration)
+    effect = effect if effect in ("whoosh", "soft_hit", "click", "shimmer") else "whoosh"
+    if effect == "click":
+        return f"sine=frequency=1500:duration={d:.3f},afade=t=out:st=0:d={d:.3f}"
+    if effect == "soft_hit":
+        return f"sine=frequency=180:duration={d:.3f},afade=t=out:st=0:d={d:.3f}"
+    if effect == "shimmer":
+        return f"sine=frequency=880:duration={d:.3f},aecho=0.6:0.7:35:0.12,afade=t=out:st=0:d={d:.3f}"
+    return f"anoisesrc=color=pink:duration={d:.3f}:amplitude=0.08,highpass=f=900,lowpass=f=6500,afade=t=in:st=0:d={min(0.08,d):.3f},afade=t=out:st={max(0,d-0.12):.3f}:d={min(0.12,d):.3f}"
+
+
+def mix_sound_effects(video: Path, effects: list, out: Path):
+    valid = []
+    total = duration_of(video)
+    for x in effects or []:
+        try:
+            start = max(0.0, float(x.get("start") or 0))
+            duration = min(max(float(x.get("duration") or 0.12), 0.03), 5.0)
+            volume = min(max(float(x.get("volume") if x.get("volume") is not None else 0.12), 0.0), 0.5)
+            if start < total:
+                valid.append((str(x.get("effect") or "whoosh"), start, min(duration, total-start), volume))
+        except (TypeError, ValueError):
+            continue
+    if not valid:
+        sh(["ffmpeg", "-y", "-i", str(video), "-c", "copy", *FASTSTART, str(out)])
+        return
+
+    cmd = ["ffmpeg", "-y", "-i", str(video)]
+    for effect, start, dur, volume in valid:
+        cmd += ["-f", "lavfi", "-t", f"{dur:.3f}", "-i", sfx_lavfi(effect, dur)]
+    filters = []
+    if has_audio(video):
+        filters.append("[0:a]aformat=sample_rates=48000:channel_layouts=stereo[base]")
+    else:
+        filters.append(f"anullsrc=channel_layout=stereo:sample_rate=48000:d={total:.3f}[base]")
+    mix = ["[base]"]
+    for i, (_, start, dur, volume) in enumerate(valid, start=1):
+        filters.append(
+            f"[{i}:a]aformat=sample_rates=48000:channel_layouts=stereo,"
+            f"volume={volume:.4f},adelay={int(round(start*1000))}:all=1[s{i}]"
+        )
+        mix.append(f"[s{i}]")
+    filters.append("".join(mix) + f"amix=inputs={len(mix)}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[aout]")
+    sh(cmd + [
+        "-filter_complex", ";".join(filters),
+        "-map", "0:v", "-map", "[aout]",
+        "-c:v", "copy", *ENC_A, *FASTSTART, str(out)
+    ])
+
+
+
 def has_effects(payload: dict) -> bool:
     out = payload.get("output") or {}
     subtitles = out.get("subtitles") or {}
@@ -264,10 +370,12 @@ def has_effects(payload: dict) -> bool:
     if out.get("title") or out.get("watermark") or out.get("badge"):
         return True
     tracks = payload.get("tracks") or {}
-    if tracks.get("text") or tracks.get("audio"):
+    if tracks.get("text") or tracks.get("audio") or tracks.get("sfx"):
+        return True
+    if out.get("sound_effects"):
         return True
     for seg in payload.get("segments", []):
-        if seg.get("zoom") or seg.get("transform"):
+        if seg.get("zoom") or seg.get("transform") or seg.get("speed") or seg.get("mirror") or seg.get("color_filter") or seg.get("clean_silence"):
             return True
         tr = seg.get("transition")
         if tr and tr.get("type") not in (None, "none"):
@@ -277,7 +385,7 @@ def has_effects(payload: dict) -> bool:
 
 def build_segment_filter(aspect, canvas, zoom, transform, watermark, title, badge, subtitles_ass,
                           fade_in, fade_out, is_first, is_last, src_w, src_h, seg_dur,
-                          text_layers=None, project_start=0.0):
+                          text_layers=None, project_start=0.0, speed=1.0, mirror=False, color_filter="none"):
     w, h = canvas if canvas else (src_w, src_h)
     steps = []
 
@@ -327,6 +435,25 @@ def build_segment_filter(aspect, canvas, zoom, transform, watermark, title, badg
     else:
         steps.append(f"{cur}fps={FPS}[vzoom]")
         cur = "[vzoom]"
+
+    speed = min(max(float(speed or 1), 0.5), 2.0)
+    if abs(speed - 1.0) > 0.001:
+        steps.append(f"{cur}setpts=PTS/{speed}[vspeed]")
+        cur = "[vspeed]"
+    if mirror:
+        steps.append(f"{cur}hflip[vflip]")
+        cur = "[vflip]"
+    color_eq = {
+        "warm": "eq=contrast=1.04:brightness=0.015:saturation=1.12",
+        "cool": "eq=contrast=1.03:brightness=0.005:saturation=1.08,hue=h=8",
+        "cinematic": "eq=contrast=1.10:brightness=-0.015:saturation=0.92",
+        "soft": "eq=contrast=0.96:brightness=0.025:saturation=0.92",
+        "mono": "hue=s=0",
+        "vintage": "eq=contrast=0.92:brightness=0.02:saturation=0.78",
+    }.get(str(color_filter or "none"))
+    if color_eq:
+        steps.append(f"{cur}{color_eq}[vcolor]")
+        cur = "[vcolor]"
 
     # Transformaciones por clip procedentes del editor.
     # Los límites ya fueron validados por el Worker; se vuelven a acotar aquí
@@ -430,6 +557,9 @@ def build_segment_filter(aspect, canvas, zoom, transform, watermark, title, badg
         steps.append(f"{cur}ass=filename='{ass_file}'[vsub]")
         cur = "[vsub]"
 
+    if abs(float(speed or 1) - 1.0) > 0.001:
+        steps.append(f"{cur}atempo={float(speed):.4f}[aspeed]")
+        cur = "[aspeed]"
     if is_first and fade_in > 0:
         steps.append(f"{cur}fade=t=in:st=0:d={fade_in}[vfi]")
         cur = "[vfi]"
@@ -442,7 +572,7 @@ def build_segment_filter(aspect, canvas, zoom, transform, watermark, title, badg
     return ";".join(steps), w, h
 
 
-def build_audio_filter(normalize, is_first, is_last, fade_in, fade_out, seg_dur, a_in="[0:a]"):
+def build_audio_filter(normalize, is_first, is_last, fade_in, fade_out, seg_dur, a_in="[0:a]", speed=1.0):
     steps = []
     cur = a_in
     if normalize:
@@ -483,7 +613,7 @@ def process_segment(src, dst, payload_output, seg_effects, subtitles_ass, is_fir
     afilter = build_audio_filter(
         bool(payload_output.get("normalize_audio")), is_first, is_last,
         float(payload_output.get("fade_in") or 0), float(payload_output.get("fade_out") or 0),
-        seg_dur, a_in,
+        seg_dur, a_in, speed_factor(seg_effects),
     )
 
     sh([
@@ -664,11 +794,24 @@ def main():
     tracks_cfg = payload.get("tracks") or {}
     text_layers = tracks_cfg.get("text") or []
     audio_layers = tracks_cfg.get("audio") or []
+    sfx_layers = tracks_cfg.get("sfx") or []
 
     raw_clips = sorted(clips_dir.glob("segment_*.mp4"))
     if not raw_clips:
         print("No hay segmentos descargados en", clips_dir)
         sys.exit(1)
+
+    if any(bool(x.get("clean_silence")) for x in segments_cfg):
+        cleaned = []
+        for i, src in enumerate(raw_clips):
+            cfg = segments_cfg[i] if i < len(segments_cfg) else {}
+            if cfg.get("clean_silence"):
+                dst = clips_dir / f"clean_{i:03d}.mp4"
+                clean_silences(src, dst, -38.0, 0.65)
+                cleaned.append(dst)
+            else:
+                cleaned.append(src)
+        raw_clips = cleaned
 
     subtitle_cfg = output_cfg.get("subtitles") or {}
     subtitle_enabled = bool(subtitle_cfg.get("enabled"))
@@ -697,7 +840,7 @@ def main():
             subtitle_files[i] = ass_path
 
     # Con música, primero se construye el clip y luego se mezcla el audio.
-    built = clips_dir / "built.mp4" if (audio_cfg or audio_layers) else output_path
+    built = clips_dir / "built.mp4" if (audio_cfg or audio_layers or sfx_layers or output_cfg.get("sound_effects")) else output_path
 
     if not has_effects(payload) and all(is_universal(p) for p in raw_clips):
         # Sin efectos y ya en H.264/AAC: unión directa sin recodificar (ruta rápida).
@@ -744,6 +887,7 @@ def main():
                 except (TypeError, ValueError):
                     requested_dur = 0.0
             timeline_dur = requested_dur or video_duration(src)
+            timeline_dur = timeline_dur / speed_factor(seg_effects)
             process_segment(
                 src, dst, output_cfg, seg_effects, subtitle_files.get(i),
                 i == 0, i == len(raw_clips) - 1,
@@ -759,6 +903,15 @@ def main():
         mix_timeline_audio(built, audio_layers, output_path)
     elif built != output_path:
         sh(["ffmpeg", "-y", "-i", str(built), "-c", "copy", *FASTSTART, str(output_path)])
+    else:
+        sh(["ffmpeg", "-y", "-i", str(built), "-c", "copy", *FASTSTART, str(output_path)])
+
+    sfx = list(sfx_layers)
+    sfx.extend(output_cfg.get("sound_effects") or [])
+    if sfx:
+        sfx_out = clips_dir / "with_sfx.mp4"
+        mix_sound_effects(output_path, sfx, sfx_out)
+        sh(["ffmpeg", "-y", "-i", str(sfx_out), "-c", "copy", *FASTSTART, str(output_path)])
 
     verify_output(output_path)
 
