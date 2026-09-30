@@ -137,6 +137,42 @@ function sanitizeOutput(out: any) {
   return result;
 }
 
+function sanitizeTracks(tracks: any) {
+  const text = Array.isArray(tracks?.text) ? tracks.text.slice(0, 100) : [];
+  const audio = Array.isArray(tracks?.audio) ? tracks.audio.slice(0, 50) : [];
+  return {
+    video: ["main"],
+    text: text.map((x: any) => ({
+      id: typeof x?.id === "string" ? x.id.slice(0, 80) : undefined,
+      type: "text",
+      start: Math.max(0, Math.min(Number(x?.start) || 0, 86400)),
+      end: Math.max(0, Math.min(Number(x?.end) || 0, 86400)),
+      text: typeof x?.text === "string" ? x.text.slice(0, 500) : "",
+      x: Math.max(-100, Math.min(Number(x?.x) || 0, 100)),
+      y: Math.max(-100, Math.min(Number(x?.y) || 0, 100)),
+      scale: Math.max(0.25, Math.min(Number(x?.scale) || 1, 4)),
+      rotation: Math.max(-180, Math.min(Number(x?.rotation) || 0, 180)),
+      color: /^#[0-9a-fA-F]{6}$/.test(x?.color || "") ? x.color : "#ffffff",
+      size: Math.max(8, Math.min(Number(x?.size) || 54, 160)),
+      position: ["top", "center", "bottom"].includes(x?.position) ? x.position : "center",
+      bold: x?.bold !== false,
+    })).filter((x: any) => x.end > x.start && x.text),
+    audio: audio.map((x: any) => ({
+      id: typeof x?.id === "string" ? x.id.slice(0, 80) : undefined,
+      type: "audio",
+      start: Math.max(0, Math.min(Number(x?.start) || 0, 86400)),
+      end: Math.max(0, Math.min(Number(x?.end) || 0, 86400)),
+      source_start: Math.max(0, Math.min(Number(x?.sourceStart) || 0, 86400)),
+      source_url: validateSourceUrl(x?.sourceUrl) || null,
+      path: typeof x?.path === "string" ? x.path.slice(0, 160) : null,
+      volume: Math.max(0, Math.min(Number(x?.volume) || 1, 2)),
+      fade_in: Math.max(0, Math.min(Number(x?.fadeIn) || 0, 10)),
+      fade_out: Math.max(0, Math.min(Number(x?.fadeOut) || 0, 10)),
+      name: typeof x?.name === "string" ? x.name.slice(0, 120) : "Audio",
+    })).filter((x: any) => x.end > x.start && (x.source_url || x.path)),
+  };
+}
+
 function sanitizeSegmentEffects(s: any) {
   const extra: any = {};
   if (s?.transform && typeof s.transform === "object") {
@@ -172,7 +208,7 @@ function validateSourceUrl(value: unknown): string | null {
   }
 }
 
-function validatePayload(body: any): { ok: true; segments: any[]; output: any } | { ok: false; error: string } {
+function validatePayload(body: any): { ok: true; segments: any[]; tracks: any; output: any } | { ok: false; error: string } {
   const fallbackUrl = validateSourceUrl(body?.url);
   if (!fallbackUrl) return { ok: false, error: "Falta 'url' válida" };
   if (!Array.isArray(body.segments) || body.segments.length === 0) return { ok: false, error: "Falta 'segments'" };
@@ -194,7 +230,7 @@ function validatePayload(body: any): { ok: true; segments: any[]; output: any } 
   }
   if (total > MAX_TOTAL_SECONDS) return { ok: false, error: `Duración total supera ${MAX_TOTAL_SECONDS}s` };
 
-  return { ok: true, segments, output: sanitizeOutput(body.output) };
+  return { ok: true, segments, tracks: sanitizeTracks(body.tracks), output: sanitizeOutput(body.output) };
 }
 
 async function dispatchWorkflow(env: Env, jobId: string, payload: unknown) {
@@ -535,6 +571,7 @@ export default {
         await dispatchWorkflow(env, jobId, {
           url: body.url,
           segments: validation.segments,
+          tracks: validation.tracks,
           output: validation.output,
         });
       } catch (e: any) {
