@@ -575,6 +575,12 @@ def build_segment_filter(aspect, canvas, zoom, transform, watermark, title, badg
 def build_audio_filter(normalize, is_first, is_last, fade_in, fade_out, seg_dur, a_in="[0:a]", speed=1.0):
     steps = []
     cur = a_in
+    speed = min(max(float(speed or 1), 0.5), 2.0)
+    # La imagen usa setpts=PTS/speed; el audio debe cambiar en la misma
+    # proporción para conservar sincronía dentro de cada segmento.
+    if abs(speed - 1.0) > 0.001:
+        steps.append(f"{cur}atempo={speed:.4f}[aspeed]")
+        cur = "[aspeed]"
     if normalize:
         steps.append(f"{cur}loudnorm=I=-16:TP=-1.5:LRA=11[anorm]")
         cur = "[anorm]"
@@ -603,6 +609,9 @@ def process_segment(src, dst, payload_output, seg_effects, subtitles_ass, is_fir
         subtitles_ass,
         float(payload_output.get("fade_in") or 0), float(payload_output.get("fade_out") or 0),
         is_first, is_last, src_w, src_h, seg_dur, text_layers, project_start,
+        speed_factor(seg_effects),
+        bool(seg_effects.get("mirror")),
+        str(seg_effects.get("color_filter") or "none"),
     )
     inputs = ["-i", str(src)]
     a_in = "[0:a]"
