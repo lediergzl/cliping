@@ -604,6 +604,46 @@ def mix_audio(video, cfg, out):
     sh(cmd)
 
 
+def mix_timeline_audio(video, tracks, out):
+    layers = []
+    for layer in tracks or []:
+        path = layer.get("path")
+        if not path or not Path(path).exists():
+            continue
+        try:
+            start = max(0.0, float(layer.get("start") or 0))
+            end = max(start + 0.05, float(layer.get("end") or start + 0.05))
+            source_start = max(0.0, float(layer.get("source_start") or 0))
+            volume = min(max(float(layer.get("volume", 1) or 1), 0.0), 2.0)
+            fade_in = min(max(float(layer.get("fade_in") or 0), 0.0), end - start)
+            fade_out = min(max(float(layer.get("fade_out") or 0), 0.0), end - start)
+            layers.append((path, start, end, source_start, volume, fade_in, fade_out))
+        except (TypeError, ValueError):
+            continue
+    if not layers:
+        sh(["ffmpeg", "-y", "-i", str(video), "-c", "copy", *FASTSTART, str(out)])
+        return
+    cmd = ["ffmpeg", "-y", "-i", str(video)]
+    for path, start, end, source_start, volume, fade_in, fade_out in layers:
+        if source_start > 0:
+            cmd += ["-ss", f"{source_start:.3f}"]
+        cmd += ["-i", str(path)]
+    filters = ["[0:a]aformat=sample_rates=48000:channel_layouts=stereo[base]"]
+    mix_inputs = ["[base]"]
+    for i, (_, start, end, _, volume, fade_in, fade_out) in enumerate(layers, start=1):
+        dur = end - start
+        chain = f"[{i}:a]atrim=0:{dur:.3f},asetpts=PTS-STARTPTS,volume={volume:.4f}"
+        if fade_in > 0:
+            chain += f",afade=t=in:st=0:d={fade_in:.3f}"
+        if fade_out > 0:
+            chain += f",afade=t=out:st={max(0.0, dur-fade_out):.3f}:d={fade_out:.3f}"
+        chain += f",adelay={int(round(start * 1000))}:all=1[a{i}]"
+        filters.append(chain)
+        mix_inputs.append(f"[a{i}]")
+    filters.append("".join(mix_inputs) + f"amix=inputs={len(mix_inputs)}:duration=first:dropout_transition=0:normalize=0,alimiter=limit=0.95[aout]")
+    sh(cmd + ["-filter_complex", ";".join(filters), "-map", "0:v", "-map", "[aout]",
+              "-c:v", "copy", *ENC_A, *FASTSTART, str(out)])
+
 def verify_output(path):
     """Falla el job si el archivo no es reproducible de forma universal."""
     vc = stream_info(path, "v", "codec_name")
@@ -715,6 +755,10 @@ def main():
 
     if audio_cfg:
         mix_audio(built, audio_cfg, output_path)
+    elif audio_layers:
+        mix_timeline_audio(built, audio_layers, output_path)
+    elif built != output_path:
+        sh(["ffmpeg", "-y", "-i", str(built), "-c", "copy", *FASTSTART, str(output_path)])
 
     verify_output(output_path)
 
