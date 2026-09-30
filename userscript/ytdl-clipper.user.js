@@ -1623,21 +1623,48 @@
     function openEditor() {
         if (!state.segments.length) return;
 
+        // El editor necesita recibir explícitamente tanto los clips como
+        // la biblioteca de medios. Los vídeos no se transfieren como blobs:
+        // se envía su URL de origen y el editor crea el preview desde ella.
+        const clips = state.segments.map((s, i) => ({
+            ...s,
+            id: s.id || ('clip-' + (i + 1)),
+            sourceUrl: s.sourceUrl || s.source_url || getCurrentUrl(),
+        }));
+
+        const mediaByUrl = new Map();
+        clips.forEach((c) => {
+            const url = c.sourceUrl;
+            if (!url || mediaByUrl.has(url)) return;
+            mediaByUrl.set(url, {
+                id: 'media-' + mediaByUrl.size,
+                url,
+                title: sourceLabel(url),
+            });
+        });
+
         const project = {
             id: 'project-' + Date.now(),
             name: 'Proyecto YTDL Clipper',
-            segments: state.segments.map(s => ({ ...s })),
+            media: Array.from(mediaByUrl.values()),
+            clips,
+            // Compatibilidad con versiones anteriores del editor.
+            segments: clips.map((s) => ({ ...s })),
             output: readEffectsOutput(),
         };
 
+        log('Abriendo editor con proyecto:', {
+            clips: project.clips.length,
+            media: project.media.length,
+            sources: project.media.map((m) => m.url),
+        });
+
         // El editor se sirve como una página HTML real desde el Worker.
-        // No usamos about:blank + document.write porque about:blank hereda
-        // Trusted Types/CSP de YouTube y bloquea la asignación de HTML.
-        // Abrimos directamente el origen del Worker y pasamos el proyecto
-        // mediante location.hash para que editor.html lo cargue al iniciar.
+        // El proyecto viaja en el hash como base64url para no depender de
+        // Trusted Types/CSP de YouTube.
         const encodedProject = encodeEditorProject(project);
         const editorUrl =
-            CONFIG.WORKER_URL.replace(/\\/$/, '') + '/editor#' + encodedProject;
+            CONFIG.WORKER_URL.replace(/\/$/, '') + '/editor#' + encodedProject;
 
         const win = window.open(editorUrl, '_blank');
         if (!win) {
