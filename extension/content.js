@@ -1682,10 +1682,15 @@
         const sendProject = () => {
             tries++;
             try {
+                // La ventana recién abierta puede estar todavía en transición
+                // de YouTube -> Worker. Durante esa fase su origin puede no
+                // coincidir con editorOrigin y Chrome rechaza el postMessage.
+                // El editor valida el origen del emisor, así que aquí usamos
+                // '*' para que el envío no falle durante la navegación.
                 win.postMessage({
                     type: 'ytdl-editor-project',
                     project,
-                }, editorOrigin);
+                }, '*');
             } catch (e) {
                 // La ventana todavía puede estar cargando.
             }
@@ -1763,6 +1768,7 @@
 
     window.addEventListener('message', (event) => {
         if (event.data?.type !== 'ytdl-editor-export') return;
+        if (event.origin !== CONFIG.WORKER_URL.replace(/\/$/, '')) return;
         if (!event.data.payload || !Array.isArray(event.data.payload.segments)) return;
         state.segments = dedupeSegments(event.data.payload.segments.map(s => normalizeSegment({
             ...s,
