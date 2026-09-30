@@ -891,24 +891,15 @@ def main():
         for i, src in enumerate(raw_clips):
             seg_effects = segments_cfg[i] if i < len(segments_cfg) else {}
             dst = clips_dir / f"proc_{i:03d}.mp4"
-            requested_dur = 0.0
-            if i < len(segments_cfg):
-                try:
-                    requested_dur = max(0.0, float(segments_cfg[i].get("end", 0)) - float(segments_cfg[i].get("start", 0)))
-                except (TypeError, ValueError):
-                    requested_dur = 0.0
-            timeline_dur = requested_dur or video_duration(src)
-            timeline_dur = timeline_dur / speed_factor(seg_effects)
             process_segment(
                 src, dst, output_cfg, seg_effects, subtitle_files.get(i),
                 i == 0, i == len(raw_clips) - 1,
                 common_canvas, text_layers, project_start,
-                speed_factor(seg_effects),
-                bool(seg_effects.get("mirror")),
-                str(seg_effects.get("color_filter") or "none"),
             )
             proc_files.append(dst)
-            project_start += timeline_dur
+            # Duración real después de silencios/velocidad: el timeline de
+            # textos debe seguir el vídeo ya transformado, no el tramo original.
+            project_start += video_duration(dst)
         combine(proc_files, segments_cfg, built)
 
     if audio_cfg:
