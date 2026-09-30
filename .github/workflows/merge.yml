@@ -181,6 +181,27 @@ jobs:
             echo "Audio de fondo listo: $AUDIO_PATH"
           fi
 
+          # ---- Capas AUDIO de la timeline: descargar URLs y guardar path local ----
+          AUDIO_TRACK_COUNT=$(jq '.tracks.audio // [] | length' payload.json)
+          if [ "$AUDIO_TRACK_COUNT" -gt 0 ]; then
+            mkdir -p audio_layers
+            for i in $(seq 0 $((AUDIO_TRACK_COUNT - 1))); do
+              TRACK_URL=$(jq -r ".tracks.audio[$i].source_url // empty" payload.json)
+              TRACK_PATH=$(jq -r ".tracks.audio[$i].path // empty" payload.json)
+              if [ -n "$TRACK_URL" ]; then
+                OUT="audio_layers/track_$(printf '%03d' "$i").mp3"
+                echo "Descargando capa de audio $i: $TRACK_URL"
+                curl -L --fail --retry 3 --connect-timeout 15 --max-time 300 "$TRACK_URL" -o "$OUT"
+                jq --arg p "$OUT" ".tracks.audio[$i].path = \$p" payload.json > payload.tmp && mv payload.tmp payload.json
+              elif [ -n "$TRACK_PATH" ] && [ -f "$TRACK_PATH" ]; then
+                echo "Capa de audio $i ya tiene path local: $TRACK_PATH"
+              else
+                echo "::warning::Capa de audio $i sin URL/path disponible; se omitirá"
+                jq ".tracks.audio[$i].path = null" payload.json > payload.tmp && mv payload.tmp payload.json
+              fi
+            done
+          fi
+
       # yt-dlp reescribe cookies.txt con las cookies renovadas por YouTube.
       # Si cambiaron y parecen válidas, se guardan de vuelta en el secret para
       # que no caduquen. Requiere el secret SECRETS_PAT (ver README); si no
