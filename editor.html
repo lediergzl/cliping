@@ -74,16 +74,38 @@ document.getElementById('split').onclick=function(){var c=current();if(!c)return
 document.getElementById('undo').onclick=function(){if(!history.length)return;future.push(clone(project));project=history.pop();selectedId=project.clips[0]?.id||null;selectedIds=[];save();render()};document.getElementById('redo').onclick=function(){if(!future.length)return;history.push(clone(project));project=future.pop();selectedId=project.clips[0]?.id||null;selectedIds=[];save();render()};document.getElementById('new').onclick=function(){if(confirm('¿Crear un proyecto vacío?')){history.push(clone(project));project=normalize({});selectedId=null;save();render()}};document.getElementById('save').onclick=function(){save();toast('Proyecto guardado')};document.getElementById('export').onclick=exportProject;
 window.addEventListener('beforeunload',function(){clearInterval(timer);save()});window.addEventListener('message',function(ev){
   try{
-    if(ev.origin!==location.origin)return;
+    // El proyecto lo envía la extensión desde YouTube. Por eso el origen
+    // del mensaje es youtube.com, no el origen del Worker que sirve este editor.
+    var allowedOrigins=[
+      location.origin,
+      'https://www.youtube.com',
+      'https://www.twitch.tv'
+    ];
+    if(allowedOrigins.indexOf(ev.origin)<0)return;
     var data=ev.data;
     if(!data||data.type!=='ytdl-editor-project'||!data.project)return;
+    if(!Array.isArray(data.project.clips)&&!Array.isArray(data.project.segments))return;
+
     project=normalize(data.project);
     selectedId=project.clips[0]?.id||null;
     selectedIds=[];
     playTime=0;
     save();
     render();
-    try{ev.source.postMessage({type:'ytdl-editor-ready',clips:project.clips.length,media:project.media.length},ev.origin)}catch(e){}
+
+    console.log('[YTDL Editor] Proyecto recibido:',{
+      clips:project.clips.length,
+      media:project.media.length,
+      sources:project.media.map(function(m){return m.url})
+    });
+
+    try{
+      ev.source.postMessage({
+        type:'ytdl-editor-ready',
+        clips:project.clips.length,
+        media:project.media.length
+      },ev.origin);
+    }catch(e){}
   }catch(err){
     console.error('YTDL editor: no se pudo recibir el proyecto',err);
   }
