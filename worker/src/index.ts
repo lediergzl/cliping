@@ -504,7 +504,7 @@ async function serveEditor(): Promise<Response> {
 
   const upstream = await fetch(editorUrl, {
     headers: { Accept: "text/html" },
-    cf: { cacheTtl: 60, cacheEverything: true },
+    cf: { cacheTtl: 0, cacheEverything: false },
   });
 
   if (!upstream.ok) {
@@ -520,7 +520,7 @@ async function serveEditor(): Promise<Response> {
     status: 200,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      "Cache-Control": "public, max-age=60",
+      "Cache-Control": "no-store, no-cache, must-revalidate",
       "X-YTDL-Editor": "standalone",
     },
   });
