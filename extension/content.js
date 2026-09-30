@@ -1594,27 +1594,65 @@
     function openEditor() {
         if (!state.segments.length) return;
 
+        const clips = state.segments.map((seg, i) => ({
+            ...seg,
+            id: seg.id || ('clip-' + (i + 1)),
+            sourceUrl: seg.sourceUrl || seg.source_url || getCurrentUrl(),
+        }));
+
+        const mediaByUrl = new Map();
+        clips.forEach((c) => {
+            const url = c.sourceUrl;
+            if (!url || mediaByUrl.has(url)) return;
+            mediaByUrl.set(url, {
+                id: 'media-' + mediaByUrl.size,
+                url,
+                title: sourceLabel(url),
+            });
+        });
+
         const project = {
             id: 'project-' + Date.now(),
             name: 'Proyecto YTDL Clipper',
-            segments: state.segments.map(s => ({ ...s })),
+            media: Array.from(mediaByUrl.values()),
+            clips,
+            segments: clips.map((s) => ({ ...s })),
             output: readEffectsOutput(),
         };
 
-        // El editor se sirve como una página HTML real desde el Worker.
-        // No usamos about:blank + document.write porque about:blank hereda
-        // Trusted Types/CSP de YouTube y bloquea la asignación de HTML.
-        // Abrimos directamente el origen del Worker y pasamos el proyecto
-        // mediante location.hash para que editor.html lo cargue al iniciar.
+        console.log('[YTDL Clipper] Enviando proyecto al editor:', {
+            clips: project.clips.length,
+            media: project.media.length,
+            sources: project.media.map((m) => m.url),
+        });
+
         const encodedProject = encodeEditorProject(project);
-        const editorUrl =
-            CONFIG.WORKER_URL.replace(/\/$/, '') + '/editor#' + encodedProject;
+        const editorOrigin = CONFIG.WORKER_URL.replace(/\/$/, '');
+        const editorUrl = editorOrigin + '/editor#' + encodedProject;
 
         const win = window.open(editorUrl, '_blank');
         if (!win) {
             setStatus('El navegador bloqueó la ventana del editor', 'error');
             return;
         }
+
+        // Enviamos el proyecto repetidamente mientras el editor termina
+        // de cargar. Así no dependemos exclusivamente del hash.
+        let tries = 0;
+        const sendProject = () => {
+            tries++;
+            try {
+                win.postMessage({
+                    type: 'ytdl-editor-project',
+                    project,
+                }, editorOrigin);
+            } catch (e) {
+                // La ventana todavía puede estar cargando.
+            }
+            if (tries >= 15) clearInterval(timer);
+        };
+        const timer = setInterval(sendProject, 300);
+        sendProject();
     }
 
     // ================== ENVIAR AL WORKER ==================
