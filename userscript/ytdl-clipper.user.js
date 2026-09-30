@@ -1623,13 +1623,10 @@
     function openEditor() {
         if (!state.segments.length) return;
 
-        // El editor necesita recibir explícitamente tanto los clips como
-        // la biblioteca de medios. Los vídeos no se transfieren como blobs:
-        // se envía su URL de origen y el editor crea el preview desde ella.
-        const clips = state.segments.map((s, i) => ({
-            ...s,
-            id: s.id || ('clip-' + (i + 1)),
-            sourceUrl: s.sourceUrl || s.source_url || getCurrentUrl(),
+        const clips = state.segments.map((seg, i) => ({
+            ...seg,
+            id: seg.id || ('clip-' + (i + 1)),
+            sourceUrl: seg.sourceUrl || seg.source_url || getCurrentUrl(),
         }));
 
         const mediaByUrl = new Map();
@@ -1648,20 +1645,19 @@
             name: 'Proyecto YTDL Clipper',
             media: Array.from(mediaByUrl.values()),
             clips,
-            // Compatibilidad con versiones anteriores del editor.
             segments: clips.map((s) => ({ ...s })),
             output: readEffectsOutput(),
         };
 
-        log('Abriendo editor con proyecto:', {
+        log('Enviando proyecto al editor:', {
             clips: project.clips.length,
             media: project.media.length,
             sources: project.media.map((m) => m.url),
         });
 
-        // El editor se sirve como una página HTML real desde el Worker.
-        // El proyecto viaja en el hash como base64url para no depender de
-        // Trusted Types/CSP de YouTube.
+        // El proyecto se manda por postMessage al editor ya cargado.
+        // Mantenemos el hash como respaldo, pero el transporte principal
+        // ya no depende de que el navegador conserve/decodifique el hash.
         const encodedProject = encodeEditorProject(project);
         const editorUrl =
             CONFIG.WORKER_URL.replace(/\/$/, '') + '/editor#' + encodedProject;
@@ -1671,6 +1667,20 @@
             setStatus('El navegador bloqueó la ventana del editor', 'error');
             return;
         }
+
+        let tries = 0;
+        const timer = setInterval(() => {
+            tries++;
+            try {
+                win.postMessage({
+                    type: 'ytdl-editor-project',
+                    project,
+                }, CONFIG.WORKER_URL.replace(/\/$/, ''));
+            } catch (e) {
+                // La ventana todavía puede estar cargando.
+            }
+            if (tries >= 15) clearInterval(timer);
+        }, 300);
     }
 
     // ================== ENVIAR AL WORKER ==================
