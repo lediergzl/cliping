@@ -73,9 +73,36 @@
         return s;
     }
 
+    function segmentSignature(seg) {
+        const url = String(seg?.sourceUrl || seg?.source_url || '').trim();
+        const key = String(seg?.sourceKey || '').trim();
+        const start = Number(seg?.start);
+        const end = Number(seg?.end);
+        return [
+            url.replace(/#.*$/, ''),
+            key,
+            Number.isFinite(start) ? start.toFixed(3) : 'NaN',
+            Number.isFinite(end) ? end.toFixed(3) : 'NaN',
+        ].join('|');
+    }
+
+    function dedupeSegments(list) {
+        const seen = new Set();
+        const out = [];
+        for (const raw of Array.isArray(list) ? list : []) {
+            const seg = normalizeSegment(raw, raw?.sourceUrl || raw?.source_url || null, raw?.sourceKey || null);
+            const sig = segmentSignature(seg);
+            if (seen.has(sig)) continue;
+            seen.add(sig);
+            out.push(seg);
+        }
+        return out;
+    }
+
     function saveProjectSegments() {
         try {
             if (!state.segments.length) { gmDelete(PROJECT_SEGMENTS_KEY); return; }
+            state.segments = dedupeSegments(state.segments);
             gmSet(PROJECT_SEGMENTS_KEY, JSON.stringify({ segments: state.segments, savedAt: Date.now() }));
         } catch (e) { /* ignorar */ }
     }
@@ -87,7 +114,7 @@
             const parsed = JSON.parse(raw);
             if (!parsed || !Array.isArray(parsed.segments) || !parsed.segments.length) return null;
             if (Date.now() - (parsed.savedAt || 0) > SEGMENTS_MAX_AGE_MS) { gmDelete(PROJECT_SEGMENTS_KEY); return null; }
-            return parsed.segments.map(s => normalizeSegment(s, null, null));
+            return dedupeSegments(parsed.segments);
         } catch (e) { return null; }
     }
 
@@ -115,7 +142,7 @@
                 gmDelete(SEGMENTS_KEY_PREFIX + videoKey);
                 return null;
             }
-            return parsed.segments;
+            return dedupeSegments(parsed.segments);
         } catch (e) { return null; }
     }
 
@@ -1251,7 +1278,7 @@
             setStatus('El fin debe ser posterior al inicio', 'error');
             return;
         }
-        state.segments.push({
+        const newSegment = normalizeSegment({
             sourceUrl: state.marking.sourceUrl || getCurrentUrl(),
             sourceKey: state.marking.sourceKey || getVideoKey(),
             start: state.marking.start,
@@ -1259,6 +1286,15 @@
             zoomEnabled: false, zoomFactor: 1.15, kenburns: false,
             transitionType: 'none', transitionDuration: 0.5,
         });
+        if (!state.segments.some(s => segmentSignature(s) === segmentSignature(newSegment))) {
+            state.segments.push(newSegment);
+        } else {
+            setStatus('Ese mismo tramo ya está marcado', 'error');
+            state.marking = null;
+            document.getElementById('ytdl-mark-start').disabled = false;
+            document.getElementById('ytdl-mark-end').disabled = true;
+            return;
+        }
         saveProjectSegments();
         state.marking = null;
         document.getElementById('ytdl-mark-start').disabled = false;
@@ -1594,7 +1630,11 @@
     function openEditor() {
         if (!state.segments.length) return;
 
-        const clips = state.segments.map((seg, i) => ({
+        const uniqueSegments = dedupeSegments(state.segments);
+        state.segments = uniqueSegments;
+        saveProjectSegments();
+
+        const clips = uniqueSegments.map((seg, i) => ({
             ...seg,
             id: seg.id || ('clip-' + (i + 1)),
             sourceUrl: seg.sourceUrl || seg.source_url || getCurrentUrl(),
@@ -1724,13 +1764,20 @@
     window.addEventListener('message', (event) => {
         if (event.data?.type !== 'ytdl-editor-export') return;
         if (!event.data.payload || !Array.isArray(event.data.payload.segments)) return;
-        state.segments = event.data.payload.segments.map(s => normalizeSegment({
+        state.segments = dedupeSegments(event.data.payload.segments.map(s => normalizeSegment({
             ...s,
             sourceUrl: s.source_url || s.sourceUrl,
-        }, s.source_url || null, null));
+        }, s.source_url || null, null)));
+        const cleanPayload = {
+            ...event.data.payload,
+            segments: state.segments.map(s => ({
+                ...s,
+                source_url: s.sourceUrl || s.source_url,
+            })),
+        };
         saveProjectSegments();
         renderSegments();
-        submitMergePayload(event.data.payload);
+        submitMergePayload(cleanPayload);
     });
 
     // ================== RESULTADO: VER ONLINE / COMPARTIR ==================
@@ -1919,11 +1966,11 @@
             state.currentVideoUrl = getCurrentUrl();
             const project = loadProjectSegments();
             if (project && project.length) {
-                state.segments = project;
+                state.segments = dedupeSegments(project);
             } else {
                 const legacy = loadSegmentsFor(state.currentVideoKey);
                 if (legacy && legacy.length) {
-                    state.segments = legacy.map(s => normalizeSegment(s, state.currentVideoUrl, state.currentVideoKey));
+                    state.segments = dedupeSegments(legacy.map(s => normalizeSegment(s, state.currentVideoUrl, state.currentVideoKey)));
                     saveProjectSegments();
                 }
             }
