@@ -60,7 +60,7 @@ var mediaList=Array.isArray(p.media)?p.media.slice():[],ids={};clips.forEach(fun
 var tr=p.tracks||{};if(!Array.isArray(tr.text))tr.text=[];if(!Array.isArray(tr.audio))tr.audio=[];if(!Array.isArray(tr.sfx))tr.sfx=[];if(!Array.isArray(tr.video))tr.video=['main'];tr.text=tr.text.map(function(x){return Object.assign({id:uid('text'),type:'text',start:0,end:3,text:'Texto',x:0,y:0,scale:1,rotation:0,color:'#ffffff',size:54,position:'center',bold:true},x)});tr.audio=tr.audio.map(function(x){return Object.assign({id:uid('audio'),type:'audio',start:0,end:3,sourceStart:0,volume:1,fadeIn:0,fadeOut:0},x)});tr.sfx=tr.sfx.map(function(x){return Object.assign({id:uid('sfx'),type:'sfx',effect:'whoosh',start:0,duration:.35,volume:.08,name:'SFX'},x)});return{id:p.id||uid('project'),name:p.name||'Proyecto YTDL Clipper',media:mediaList,clips:clips,output:p.output||{aspect_ratio:'9:16'},tracks:tr}}
 function enc(v){var a=new TextEncoder().encode(JSON.stringify(v)),s='';for(var i=0;i<a.length;i+=32768)s+=String.fromCharCode.apply(null,a.subarray(i,i+32768));return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
 function dec(){try{var s=location.hash.slice(1);if(!s)return null;s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';var b=atob(s),a=Uint8Array.from(b,function(c){return c.charCodeAt(0)});return JSON.parse(new TextDecoder().decode(a))}catch(e){return null}}
-function save(){try{var json=JSON.stringify(project);localStorage.setItem(KEY,json);var hash=enc(project);if(hash.length<60000){history.replaceState(null,'','#'+hash)}return true}catch(e){console.error('[YTDL Editor] No se pudo guardar',e);return false}}
+function save(){try{var json=JSON.stringify(project);localStorage.setItem(KEY,json);var hash=enc(project);if(hash.length<60000){window.history.replaceState(null,'','#'+hash)}return true}catch(e){console.error('[YTDL Editor] No se pudo guardar',e);return false}}
 function commit(){history.push(clone(project));if(history.length>50)history.shift();future=[];save();render()}
 function current(){return project.clips.find(function(c){return c.id===selectedId})||null}function currentLayer(){var all=(project.tracks.text||[]).concat(project.tracks.audio||[],project.tracks.sfx||[]);return all.find(function(x){return x.id===selectedId})||null}function projectTrackEnd(){return Math.max(total(),(project.tracks.text||[]).reduce(function(a,x){return Math.max(a,+x.end||0)},0),(project.tracks.audio||[]).reduce(function(a,x){return Math.max(a,+x.end||0)},0),(project.tracks.sfx||[]).reduce(function(a,x){return Math.max(a,(+x.start||0)+(+x.duration||0))},0))}
 function toast(t){var e=document.getElementById('toast');e.textContent=t;e.className='show';clearTimeout(toast.t);toast.t=setTimeout(function(){e.className=''},1800)}
@@ -165,13 +165,11 @@ window.addEventListener('beforeunload',function(){clearInterval(timer);save()});
       sources:project.media.map(function(m){return m.url})
     });
 
-    try{
-      ev.source.postMessage({
-        type:'ytdl-editor-ready',
-        clips:project.clips.length,
-        media:project.media.length
-      },ev.origin);
-    }catch(e){}
+    // No respondemos usando ev.origin: durante la navegación del popup
+    // puede no coincidir con el origen real de ev.source y Chrome rechaza
+    // el postMessage con "target origin does not match recipient window".
+    // El proyecto ya fue recibido y renderizado; el acuse no es necesario.
+    console.log('[YTDL Editor] Proyecto cargado correctamente');
   }catch(err){
     console.error('YTDL editor: no se pudo recibir el proyecto',err);
   }
