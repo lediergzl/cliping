@@ -263,6 +263,9 @@ def has_effects(payload: dict) -> bool:
         return True
     if out.get("title") or out.get("watermark") or out.get("badge"):
         return True
+    tracks = payload.get("tracks") or {}
+    if tracks.get("text") or tracks.get("audio"):
+        return True
     for seg in payload.get("segments", []):
         if seg.get("zoom") or seg.get("transform"):
             return True
@@ -273,7 +276,8 @@ def has_effects(payload: dict) -> bool:
 
 
 def build_segment_filter(aspect, canvas, zoom, transform, watermark, title, badge, subtitles_ass,
-                          fade_in, fade_out, is_first, is_last, src_w, src_h, seg_dur):
+                          fade_in, fade_out, is_first, is_last, src_w, src_h, seg_dur,
+                          text_layers=None, project_start=0.0):
     w, h = canvas if canvas else (src_w, src_h)
     steps = []
 
@@ -357,6 +361,35 @@ def build_segment_filter(aspect, canvas, zoom, transform, watermark, title, badg
             steps.append(f"{cur}rotate={radians}:fillcolor=black[vrotate]")
             cur = "[vrotate]"
 
+    for layer in text_layers or []:
+        try:
+            ls = float(layer.get("start", 0)) - float(project_start)
+            le = float(layer.get("end", 0)) - float(project_start)
+        except (TypeError, ValueError):
+            continue
+        if le <= 0 or ls >= seg_dur:
+            continue
+        text = str(layer.get("text") or "").strip()
+        if not text:
+            continue
+        ls = max(0.0, ls)
+        le = min(seg_dur, le)
+        color = layer.get("color") if re.fullmatch(r"#[0-9a-fA-F]{6}", str(layer.get("color") or "")) else "#ffffff"
+        size = min(max(float(layer.get("size") or 54), 8), 160)
+        scale = min(max(float(layer.get("scale") or 1), 0.25), 4)
+        x = min(max(float(layer.get("x") or 0), -100), 100)
+        y = min(max(float(layer.get("y") or 0), -100), 100)
+        position = layer.get("position") if layer.get("position") in ("top", "center", "bottom") else "center"
+        base_y = {"top": "40", "center": "(h-text_h)/2", "bottom": "h-text_h-40"}[position]
+        enable = f":enable='between(t,{ls:.3f},{le:.3f})'"
+        font = "bold" if layer.get("bold", True) else "normal"
+        steps.append(
+            f"{cur}drawtext=text='{esc_text(text)}':fontcolor={color}:fontsize={size * scale:.1f}:"
+            f"font='{font}':x='(w-text_w)/2+({x}*w/100)':y='{base_y}+({y}*h/100)'"
+            f":shadowcolor=black@0.8:shadowx=2:shadowy=2{enable}[vtext]"
+        )
+        cur = "[vtext]"
+
     if watermark and watermark.get("text"):
         y = y_expr(watermark.get("position", "bottom"))
         steps.append(
@@ -427,7 +460,7 @@ def build_audio_filter(normalize, is_first, is_last, fade_in, fade_out, seg_dur,
     return ";".join(steps)
 
 
-def process_segment(src, dst, payload_output, seg_effects, subtitles_ass, is_first, is_last, common_canvas=None):
+def process_segment(src, dst, payload_output, seg_effects, subtitles_ass, is_first, is_last, common_canvas=None, text_layers=None, project_start=0.0):
     aspect = payload_output.get("aspect_ratio") or "original"
     canvas = common_canvas if common_canvas is not None else CANVAS.get(aspect)
     src_w = int(probe(src, "width"))
@@ -439,7 +472,7 @@ def process_segment(src, dst, payload_output, seg_effects, subtitles_ass, is_fir
         payload_output.get("watermark"), payload_output.get("title"), payload_output.get("badge"),
         subtitles_ass,
         float(payload_output.get("fade_in") or 0), float(payload_output.get("fade_out") or 0),
-        is_first, is_last, src_w, src_h, seg_dur,
+        is_first, is_last, src_w, src_h, seg_dur, text_layers, project_start,
     )
     inputs = ["-i", str(src)]
     a_in = "[0:a]"
@@ -588,6 +621,9 @@ def main():
     output_cfg = payload.get("output") or {}
     segments_cfg = payload.get("segments") or []
     audio_cfg = output_cfg.get("audio")
+    tracks_cfg = payload.get("tracks") or {}
+    text_layers = tracks_cfg.get("text") or []
+    audio_layers = tracks_cfg.get("audio") or []
 
     raw_clips = sorted(clips_dir.glob("segment_*.mp4"))
     if not raw_clips:
@@ -657,15 +693,24 @@ def main():
                 common_canvas = None  # todas iguales, no hace falta forzar nada
 
         proc_files = []
+        project_start = 0.0
         for i, src in enumerate(raw_clips):
             seg_effects = segments_cfg[i] if i < len(segments_cfg) else {}
             dst = clips_dir / f"proc_{i:03d}.mp4"
+            requested_dur = 0.0
+            if i < len(segments_cfg):
+                try:
+                    requested_dur = max(0.0, float(segments_cfg[i].get("end", 0)) - float(segments_cfg[i].get("start", 0)))
+                except (TypeError, ValueError):
+                    requested_dur = 0.0
+            timeline_dur = requested_dur or video_duration(src)
             process_segment(
                 src, dst, output_cfg, seg_effects, subtitle_files.get(i),
                 i == 0, i == len(raw_clips) - 1,
-                common_canvas,
+                common_canvas, text_layers, project_start,
             )
             proc_files.append(dst)
+            project_start += timeline_dur
         combine(proc_files, segments_cfg, built)
 
     if audio_cfg:
