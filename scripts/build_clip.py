@@ -697,7 +697,7 @@ def main():
             subtitle_files[i] = ass_path
 
     # Con música, primero se construye el clip y luego se mezcla el audio.
-    built = clips_dir / "built.mp4" if audio_cfg else output_path
+    built = clips_dir / "built.mp4" if (audio_cfg or audio_layers) else output_path
 
     if not has_effects(payload) and all(is_universal(p) for p in raw_clips):
         # Sin efectos y ya en H.264/AAC: unión directa sin recodificar (ruta rápida).
