@@ -20,6 +20,9 @@
         tlView: null,
         currentVideoKey: null,
         currentVideoUrl: null,
+        editorWindow: null,
+        editorBridgeId: null,
+        editorReady: false,
     };
 
     // ================== ANCHO DEL PANEL ==================
@@ -1658,6 +1661,9 @@
             clips,
             segments: clips.map((s) => ({ ...s })),
             output: readEffectsOutput(),
+            bridgeId: (typeof crypto !== 'undefined' && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : ('bridge-' + Date.now() + '-' + Math.random().toString(36).slice(2)),
         };
 
         console.log('[YTDL Clipper] Enviando proyecto al editor:', {
@@ -1675,6 +1681,11 @@
             setStatus('El navegador bloqueó la ventana del editor', 'error');
             return;
         }
+
+        state.editorWindow = win;
+        state.editorBridgeId = project.bridgeId;
+        state.editorReady = false;
+        console.log('[YTDL Clipper] Puente del editor creado:', project.bridgeId);
 
         // Enviamos el proyecto repetidamente mientras el editor termina
         // de cargar. Así no dependemos exclusivamente del hash.
@@ -1767,22 +1778,56 @@
     }
 
     window.addEventListener('message', (event) => {
-        if (event.data?.type !== 'ytdl-editor-export') return;
+        const data = event.data;
+        if (!data || !data.type) return;
+
+        if (data.type === 'ytdl-editor-ready') {
+            if (event.origin !== CONFIG.WORKER_URL.replace(/\/$/, '')) return;
+            if (!state.editorWindow || event.source !== state.editorWindow) return;
+            if (!state.editorBridgeId || String(data.bridgeId) !== String(state.editorBridgeId)) return;
+
+            state.editorReady = true;
+            console.log('[YTDL Clipper] Editor listo para exportar:', state.editorBridgeId);
+            setStatus('Editor listo · puedes exportar');
+            return;
+        }
+
+        if (data.type !== 'ytdl-editor-export') return;
         if (event.origin !== CONFIG.WORKER_URL.replace(/\/$/, '')) return;
-        if (!event.data.payload || !Array.isArray(event.data.payload.segments)) return;
-        state.segments = dedupeSegments(event.data.payload.segments.map(s => normalizeSegment({
+        if (!state.editorWindow || event.source !== state.editorWindow) {
+            console.warn('[YTDL Clipper] Export recibido desde una ventana no autorizada');
+            return;
+        }
+        if (!state.editorBridgeId || String(data.bridgeId) !== String(state.editorBridgeId)) {
+            console.warn('[YTDL Clipper] Export rechazado: bridgeId no coincide');
+            return;
+        }
+        if (!data.payload || !Array.isArray(data.payload.segments)) {
+            console.warn('[YTDL Clipper] Export rechazado: payload inválido');
+            return;
+        }
+
+        console.log('[YTDL Clipper] Export recibido del editor:', {
+            bridgeId: data.bridgeId,
+            clips: data.payload.segments.length
+        });
+
+        state.segments = dedupeSegments(data.payload.segments.map(s => normalizeSegment({
             ...s,
             sourceUrl: s.source_url || s.sourceUrl,
         }, s.source_url || null, null)));
+
         const cleanPayload = {
-            ...event.data.payload,
+            ...data.payload,
             segments: state.segments.map(s => ({
                 ...s,
                 source_url: s.sourceUrl || s.source_url,
             })),
         };
+
         saveProjectSegments();
         renderSegments();
+        console.log('[YTDL Clipper] Enviando payload exportado al Worker /merge');
         submitMergePayload(cleanPayload);
     });
 
