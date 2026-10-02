@@ -161,7 +161,25 @@ if(k==='s'&&!ev.ctrlKey&&!ev.metaKey){ev.preventDefault();document.getElementByI
 if(k==='arrowleft'){playTime=Math.max(0,playTime-.25);clock();syncAudioLayers()}
 if(k==='arrowright'){playTime=Math.min(projectTrackEnd(),playTime+.25);clock();syncAudioLayers()}
 });
-window.addEventListener('beforeunload',function(){clearInterval(timer);save()});window.addEventListener('message',function(ev){
+window.addEventListener('beforeunload',function(){clearInterval(timer);save()});
+
+// Handshake activo: el editor solicita el proyecto al capturador.
+// Así no dependemos de que la primera ráfaga de postMessage coincida
+// con el momento exacto en que termina la navegación de la pestaña.
+function requestEditorProject(){
+  try{
+    if(window.opener&&!window.opener.closed){
+      window.opener.postMessage({type:'ytdl-editor-request-project'},'https://www.youtube.com');
+      window.opener.postMessage({type:'ytdl-editor-request-project'},'https://www.twitch.tv');
+    }
+  }catch(e){}
+}
+window.addEventListener('load',requestEditorProject);
+setTimeout(requestEditorProject,300);
+setTimeout(requestEditorProject,1000);
+setTimeout(requestEditorProject,2500);
+
+window.addEventListener('message',function(ev){
   try{
     var allowedOrigins=[location.origin,'https://www.youtube.com','https://www.twitch.tv'];
     if(allowedOrigins.indexOf(ev.origin)<0)return;
