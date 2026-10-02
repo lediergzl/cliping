@@ -169,10 +169,18 @@ window.addEventListener('beforeunload',function(){clearInterval(timer);save()});
 function requestEditorProject(){
   try{
     if(window.opener&&!window.opener.closed){
-      window.opener.postMessage({type:'ytdl-editor-request-project'},'https://www.youtube.com');
-      window.opener.postMessage({type:'ytdl-editor-request-project'},'https://www.twitch.tv');
+      console.log('[YTDL Editor] Solicitando puente al capturador');
+      // El opener puede ser una página de YouTube/Twitch o un contexto
+      // intermediario del navegador. El capturador valida event.source y
+      // event.origin antes de reenviar el proyecto, por lo que aquí no
+      // debemos restringir artificialmente el targetOrigin.
+      window.opener.postMessage({type:'ytdl-editor-request-project'},'*');
+    }else{
+      console.warn('[YTDL Editor] window.opener no disponible');
     }
-  }catch(e){}
+  }catch(e){
+    console.warn('[YTDL Editor] Error solicitando puente:',e);
+  }
 }
 window.addEventListener('load',requestEditorProject);
 setTimeout(requestEditorProject,300);
