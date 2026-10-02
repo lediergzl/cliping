@@ -1684,6 +1684,7 @@
 
         state.editorWindow = win;
         state.editorBridgeId = project.bridgeId;
+        state.editorProject = project;
         state.editorReady = false;
         console.log('[YTDL Clipper] Puente del editor creado:', project.bridgeId);
 
@@ -1781,7 +1782,27 @@
         const data = event.data;
         if (!data || !data.type) return;
 
-        if (data.type === 'ytdl-editor-ready') {
+        // El editor puede pedir el proyecto activamente. Esto evita depender
+        // de que postMessage llegue durante la navegación de la pestaña nueva.
+        if (data.type === 'ytdl-editor-request-project') {
+            if (!state.editorWindow || event.source !== state.editorWindow) return;
+            const editorOrigin = CONFIG.WORKER_URL.replace(/\/$/, '');
+            if (event.origin !== editorOrigin) return;
+            if (!state.editorProject) return;
+
+            try {
+                state.editorWindow.postMessage({
+                    type: 'ytdl-editor-project',
+                    project: state.editorProject,
+                }, editorOrigin);
+                console.log('[YTDL Clipper] Proyecto reenviado por solicitud del editor');
+            } catch (e) {
+                console.warn('[YTDL Clipper] No se pudo reenviar el proyecto:', e);
+            }
+            return;
+        }
+
+        if (data.type === 'ytdl-editor-ready') {        if (data.type === 'ytdl-editor-ready') {
             if (event.origin !== CONFIG.WORKER_URL.replace(/\/$/, '')) return;
             if (!state.editorWindow || event.source !== state.editorWindow) return;
             if (!state.editorBridgeId || String(data.bridgeId) !== String(state.editorBridgeId)) return;
